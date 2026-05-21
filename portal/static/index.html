@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Care Weekly Dashboard Portal</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; }
+  .tab-active { border-bottom: 3px solid #1d4ed8; color: #1d4ed8; font-weight: 600; }
+  .tab-btn { transition: all 0.15s; }
+  .tab-btn:hover { background: #eff6ff; }
+  .dash-table th { background: #1e3a5f; color: white; padding: 7px 12px; text-align: left; font-size: 13px; }
+  .dash-table td { padding: 6px 12px; font-size: 13px; border-bottom: 1px solid #e2e8f0; }
+  .dash-table tr:hover td { background: #f0f7ff; }
+  .group-header td { background: #dbeafe; font-weight: 700; font-size: 13px; }
+  .sub-total td { background: #e0f2fe; font-weight: 600; }
+  .section-title { background: #1e3a5f; color: white; font-weight: 700; font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+  .badge-blue { background: #dbeafe; color: #1d4ed8; }
+  .badge-green { background: #dcfce7; color: #166534; }
+  #drop-zone { border: 2px dashed #93c5fd; transition: all 0.2s; }
+  #drop-zone.drag-over { border-color: #2563eb; background: #eff6ff; }
+  .spinner { border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; width: 28px; height: 28px; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hist-row:hover { background: #f0f7ff; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="bg-gradient-to-r from-blue-900 to-blue-700 shadow-lg">
+  <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 class="text-white text-2xl font-bold tracking-wide">Care Weekly Dashboard Portal</h1>
+      <p class="text-blue-200 text-sm mt-0.5">Upload weekly data file → Analyse → View all dashboards</p>
+    </div>
+    <button onclick="showSection('history')" class="text-blue-200 hover:text-white text-sm underline">Report History</button>
+  </div>
+</div>
+
+<div class="max-w-7xl mx-auto px-6 py-6">
+
+  <!-- ===== UPLOAD SECTION ===== -->
+  <div id="sec-upload">
+    <div class="bg-white rounded-xl shadow p-6 mb-6">
+      <h2 class="text-lg font-semibold text-gray-800 mb-4">Upload Weekly Data File</h2>
+      <div id="drop-zone" class="rounded-lg p-8 text-center mb-4 cursor-pointer" onclick="document.getElementById('file-input').click()">
+        <svg class="mx-auto mb-2 text-blue-400 w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+            d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+        </svg>
+        <p class="text-gray-600 font-medium">Drop your Excel file here, or <span class="text-blue-600 underline">click to browse</span></p>
+        <p class="text-gray-400 text-sm mt-1">Accepts .xlsx / .xls &nbsp;|&nbsp; Must contain sheets: Kap Tickets, SAP tickets, SO order, Other Enquiry</p>
+      </div>
+      <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden" onchange="onFileSelected(this)"/>
+
+      <div id="file-info" class="hidden mb-4 flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+        <svg class="text-green-600 w-5 h-5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"/>
+        </svg>
+        <span id="file-name" class="text-green-800 font-medium text-sm flex-1"></span>
+        <button onclick="clearFile()" class="text-gray-400 hover:text-red-500 text-xs">✕ Remove</button>
+      </div>
+
+      <div class="flex items-center gap-4">
+        <div class="flex-1">
+          <label class="block text-sm font-medium text-gray-700 mb-1">Week Label (optional)</label>
+          <input id="week-label" type="text" placeholder="e.g. Week 19 – 4 to 10 May 2026"
+            class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"/>
+        </div>
+        <div class="pt-5">
+          <button id="btn-analyze" onclick="runAnalysis()"
+            class="bg-blue-700 hover:bg-blue-800 text-white px-8 py-2.5 rounded-lg font-semibold text-sm transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            disabled>
+            <span id="btn-text">Analyse</span>
+            <div id="btn-spinner" class="spinner hidden" style="width:18px;height:18px;border-width:2px;border-color:#fff;border-top-color:transparent;"></div>
+          </button>
+        </div>
+      </div>
+      <div id="upload-error" class="hidden mt-3 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm whitespace-pre-wrap"></div>
+    </div>
+  </div>
+
+  <!-- ===== RESULTS SECTION ===== -->
+  <div id="sec-results" class="hidden">
+    <div class="bg-white rounded-xl shadow mb-6">
+      <!-- Summary cards row -->
+      <div id="summary-cards" class="grid grid-cols-5 divide-x border-b px-0">
+        <!-- filled by JS -->
+      </div>
+      <!-- Dashboard tabs -->
+      <div class="flex border-b overflow-x-auto" id="tab-bar">
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap tab-active" onclick="switchTab(0)">Final Output</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(1)">Kapture</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(2)">SAP Tickets</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(3)">SO Output</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(4)">Overall SAP</button>
+      </div>
+      <div id="tab-content" class="p-6"></div>
+    </div>
+    <div class="flex justify-end gap-3 mb-6">
+      <button onclick="showSection('upload')" class="border border-gray-300 hover:border-gray-400 text-gray-700 px-5 py-2 rounded-lg text-sm font-medium">
+        ← Upload Another File
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== HISTORY SECTION ===== -->
+  <div id="sec-history" class="hidden">
+    <div class="bg-white rounded-xl shadow p-6 mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-800">Report History</h2>
+        <button onclick="showSection('upload')" class="text-sm text-blue-600 hover:underline">← Back to Upload</button>
+      </div>
+      <div id="history-list">
+        <div class="text-center text-gray-400 py-8">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- end max-w -->
+
+<script>
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
+let selectedFile = null;
+let currentResults = null;
+let currentTab = 0;
+
+const SUB_BUCKETS = [
+  "Refund","Delivery related","Return","Invoice/Billing related",
+  "Repair","Demo & Installation","PMS","Warranty","Others"
+];
+const SO_ORDER = [
+  "Demo & Installation","Repair","Delivery related","Invoice/Billing related",
+  "Refund","PMS","Warranty","Return","Others"
+];
+
+// -----------------------------------------------------------------------
+// Number formatting  (Indian system: en-IN)
+// -----------------------------------------------------------------------
+function fmt(n) {
+  if (n === undefined || n === null) return "–";
+  return Number(n).toLocaleString('en-IN');
+}
+function fmtPct(p) {
+  if (p === undefined || p === null) return "–";
+  return Number(p).toFixed(2) + "%";
+}
+
+// -----------------------------------------------------------------------
+// Section navigation
+// -----------------------------------------------------------------------
+function showSection(name) {
+  ["upload","results","history"].forEach(s => {
+    document.getElementById("sec-" + s).classList.add("hidden");
+  });
+  document.getElementById("sec-" + name).classList.remove("hidden");
+  if (name === "history") loadHistory();
+}
+
+// -----------------------------------------------------------------------
+// File selection
+// -----------------------------------------------------------------------
+function onFileSelected(input) {
+  if (!input.files.length) return;
+  selectedFile = input.files[0];
+  document.getElementById("file-name").textContent = selectedFile.name + " (" + (selectedFile.size / 1024).toFixed(1) + " KB)";
+  document.getElementById("file-info").classList.remove("hidden");
+  document.getElementById("btn-analyze").disabled = false;
+  document.getElementById("upload-error").classList.add("hidden");
+}
+
+function clearFile() {
+  selectedFile = null;
+  document.getElementById("file-input").value = "";
+  document.getElementById("file-info").classList.add("hidden");
+  document.getElementById("btn-analyze").disabled = true;
+}
+
+// Drag-and-drop
+const dz = document.getElementById("drop-zone");
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag-over"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("drag-over"));
+dz.addEventListener("drop", e => {
+  e.preventDefault(); dz.classList.remove("drag-over");
+  const f = e.dataTransfer.files[0];
+  if (f) {
+    selectedFile = f;
+    document.getElementById("file-name").textContent = f.name + " (" + (f.size / 1024).toFixed(1) + " KB)";
+    document.getElementById("file-info").classList.remove("hidden");
+    document.getElementById("btn-analyze").disabled = false;
+    document.getElementById("upload-error").classList.add("hidden");
+  }
+});
+
+// -----------------------------------------------------------------------
+// Run analysis
+// -----------------------------------------------------------------------
+async function runAnalysis() {
+  if (!selectedFile) return;
+
+  const btn = document.getElementById("btn-analyze");
+  const spinner = document.getElementById("btn-spinner");
+  const btnText = document.getElementById("btn-text");
+  const errDiv = document.getElementById("upload-error");
+
+  btn.disabled = true;
+  spinner.classList.remove("hidden");
+  btnText.textContent = "Analysing…";
+  errDiv.classList.add("hidden");
+
+  try {
+    const fd = new FormData();
+    fd.append("file", selectedFile);
+    fd.append("week_label", document.getElementById("week-label").value.trim());
+
+    const resp = await fetch("/api/analyze", { method: "POST", body: fd });
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      errDiv.textContent = data.detail || "Unknown error occurred.";
+      errDiv.classList.remove("hidden");
+      return;
+    }
+
+    currentResults = data.results;
+    renderResults(data);
+    showSection("results");
+
+  } catch(e) {
+    errDiv.textContent = "Network error: " + e.message;
+    errDiv.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    spinner.classList.add("hidden");
+    btnText.textContent = "Analyse";
+  }
+}
+
+// -----------------------------------------------------------------------
+// Render all dashboards
+// -----------------------------------------------------------------------
+function renderResults(data) {
+  const r = data.results;
+  renderSummaryCards(r, data.week_label);
+  switchTab(0);
+}
+
+function renderSummaryCards(r, weekLabel) {
+  const cards = [
+    { label: "Week", value: weekLabel || "–", sub: "" },
+    { label: "Total (Kapture + SAP)", value: fmt(r.final_output.total), sub: "" },
+    { label: "Total Complaints", value: fmt(r.final_output.complaints.total), sub: "Kapture + SAP" },
+    { label: "Total Request + Enquiry", value: fmt(r.final_output.request_enquiry.total), sub: "Kapture + SAP" },
+    { label: "Kapture Tickets", value: fmt(r.kapture.total), sub: "SAP: " + fmt(r.overall_sap.total) },
+  ];
+  document.getElementById("summary-cards").innerHTML = cards.map(c => `
+    <div class="px-5 py-4">
+      <p class="text-xs text-gray-500 font-medium uppercase tracking-wide">${c.label}</p>
+      <p class="text-xl font-bold text-gray-900 mt-1">${c.value}</p>
+      ${c.sub ? `<p class="text-xs text-gray-400 mt-0.5">${c.sub}</p>` : ""}
+    </div>`).join("");
+}
+
+// -----------------------------------------------------------------------
+// Tabs
+// -----------------------------------------------------------------------
+function switchTab(idx) {
+  currentTab = idx;
+  const tabs = document.querySelectorAll("#tab-bar .tab-btn");
+  tabs.forEach((t, i) => {
+    t.classList.toggle("tab-active", i === idx);
+  });
+  if (!currentResults) return;
+  const r = currentResults;
+  const renders = [
+    () => renderFinalOutput(r.final_output),
+    () => renderKapture(r.kapture),
+    () => renderSapTickets(r.sap_tickets),
+    () => renderSoOutput(r.so_output),
+    () => renderOverallSap(r.overall_sap),
+  ];
+  document.getElementById("tab-content").innerHTML = renders[idx]();
+}
+
+// -----------------------------------------------------------------------
+// Dashboard renderers
+// -----------------------------------------------------------------------
+
+function dashTable(header, rows) {
+  const [c1, c2, c3] = header;
+  return `
+  <table class="dash-table w-full border-collapse rounded-lg overflow-hidden shadow-sm">
+    <thead><tr>
+      <th class="w-1/2">${c1}</th>
+      <th class="w-1/4 text-right">${c2}</th>
+      <th class="w-1/4 text-right">${c3}</th>
+    </tr></thead>
+    <tbody>${rows.join("")}</tbody>
+  </table>`;
+}
+
+function totalRow(label, count) {
+  return `<tr class="group-header">
+    <td class="font-bold">${label}</td>
+    <td class="text-right font-bold">${fmt(count)}</td>
+    <td class="text-right"></td>
+  </tr>`;
+}
+
+function headerRow(label, count, pctLabel) {
+  return `<tr class="sub-total">
+    <td><strong>${label}</strong></td>
+    <td class="text-right font-bold">${fmt(count)}</td>
+    <td class="text-right font-bold">100.00%</td>
+  </tr>`;
+}
+
+function dataRow(label, count, pct) {
+  return `<tr>
+    <td class="pl-6">${label}</td>
+    <td class="text-right">${fmt(count)}</td>
+    <td class="text-right">${fmtPct(pct)}</td>
+  </tr>`;
+}
+
+function spacerRow() {
+  return `<tr><td colspan="3" class="py-2"></td></tr>`;
+}
+
+function buildBreakdownRows(breakdown, order) {
+  return order.map(b => dataRow(b, breakdown[b]?.count ?? 0, breakdown[b]?.pct ?? 0));
+}
+
+// --- Final Output ---
+function renderFinalOutput(d) {
+  const rows = [];
+  rows.push(totalRow("Kapture + SAP", d.total));
+  rows.push(spacerRow());
+  rows.push(headerRow("Complaints", d.complaints.total));
+  rows.push(...buildBreakdownRows(d.complaints.breakdown, SUB_BUCKETS));
+  rows.push(spacerRow());
+  rows.push(headerRow("Request + Enquiry", d.request_enquiry.total));
+  rows.push(...buildBreakdownRows(d.request_enquiry.breakdown, SUB_BUCKETS));
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-3">Final Output — Kapture + SAP Combined</h3>
+    ${dashTable(["Category", "Count", "% of Group"], rows)}`;
+}
+
+// --- Kapture ---
+function renderKapture(d) {
+  const rows = [];
+  rows.push(totalRow("Kapture", d.total));
+  rows.push(spacerRow());
+  rows.push(headerRow("Complaints", d.complaints.total));
+  rows.push(...buildBreakdownRows(d.complaints.breakdown, SUB_BUCKETS));
+  rows.push(spacerRow());
+  rows.push(headerRow("Request + Enquiry", d.request_enquiry.total));
+  rows.push(...buildBreakdownRows(d.request_enquiry.breakdown, SUB_BUCKETS));
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-3">Kapture Ticket Analysis</h3>
+    ${dashTable(["Category", "Count", "% of Complaints"], rows)}`;
+}
+
+// --- SAP Tickets ---
+function renderSapTickets(d) {
+  const compRows = [];
+  compRows.push(headerRow("Complaints", d.complaints.total));
+  compRows.push(...buildBreakdownRows(d.complaints.breakdown, SUB_BUCKETS));
+
+  const refRows = [];
+  refRows.push(headerRow("Request + Enquiry + Feedback", d.request_enquiry_feedback.total));
+  refRows.push(...buildBreakdownRows(d.request_enquiry_feedback.breakdown, SUB_BUCKETS));
+
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-3">SAP Ticket Analysis</h3>
+    <div class="grid grid-cols-2 gap-6">
+      <div>
+        ${dashTable(["Category", "Count", "% of Complaints"], compRows)}
+      </div>
+      <div>
+        ${dashTable(["Category", "Count", "% of Request + Enquiry"], refRows)}
+      </div>
+    </div>`;
+}
+
+// --- SO Output ---
+function renderSoOutput(d) {
+  const rows = [];
+  rows.push(headerRow("Request + Enquiry", d.total));
+  rows.push(...buildBreakdownRows(d.breakdown, SO_ORDER));
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-3">SO Output — Request + Enquiry Context Analysis</h3>
+    <div class="max-w-lg">
+      ${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], rows)}
+    </div>`;
+}
+
+// --- Overall SAP ---
+function renderOverallSap(d) {
+  const compRows = [];
+  compRows.push(headerRow("Complaints", d.complaints.total));
+  compRows.push(...buildBreakdownRows(d.complaints.breakdown, SUB_BUCKETS));
+
+  const reqRows = [];
+  reqRows.push(`<tr class="group-header">
+    <td class="font-bold">other Enquiry</td>
+    <td class="text-right font-bold">${fmt(d.other_enquiry_count)}</td>
+    <td class="text-right"></td>
+  </tr>`);
+  reqRows.push(headerRow("Request + Enquiry + other Enquiry", d.request_enquiry_other.total));
+  reqRows.push(...buildBreakdownRows(d.request_enquiry_other.breakdown, SUB_BUCKETS));
+
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-3">Overall SAP Analysis</h3>
+    <p class="text-sm text-gray-500 mb-4">Total SAP = SAP Tickets + SO Order + Other Enquiry &nbsp;|&nbsp; <strong>${fmt(d.total)}</strong> total tickets</p>
+    <div class="grid grid-cols-2 gap-6">
+      <div>
+        ${dashTable(["Category", "Count", "% of Complaints"], compRows)}
+      </div>
+      <div>
+        ${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], reqRows)}
+      </div>
+    </div>`;
+}
+
+// -----------------------------------------------------------------------
+// History
+// -----------------------------------------------------------------------
+async function loadHistory() {
+  try {
+    const resp = await fetch("/api/reports");
+    const reports = await resp.json();
+    const el = document.getElementById("history-list");
+    if (!reports.length) {
+      el.innerHTML = `<p class="text-center text-gray-400 py-8">No reports yet. Upload a file to get started.</p>`;
+      return;
+    }
+    el.innerHTML = `
+      <table class="w-full text-sm">
+        <thead><tr class="text-left text-gray-500 border-b">
+          <th class="pb-2 font-medium">Week Label</th>
+          <th class="pb-2 font-medium">File Name</th>
+          <th class="pb-2 font-medium">Analysed On</th>
+          <th class="pb-2"></th>
+        </tr></thead>
+        <tbody>
+          ${reports.map(r => `
+            <tr class="hist-row border-b last:border-0" onclick="loadReport('${r.id}')">
+              <td class="py-3 font-medium text-blue-700">${r.week_label}</td>
+              <td class="py-3 text-gray-600">${r.filename}</td>
+              <td class="py-3 text-gray-500">${new Date(r.created_at).toLocaleString('en-IN')}</td>
+              <td class="py-3 text-right">
+                <button class="text-blue-600 hover:underline text-xs mr-3">View</button>
+                <button onclick="event.stopPropagation(); deleteReport('${r.id}')"
+                  class="text-red-500 hover:underline text-xs">Delete</button>
+              </td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById("history-list").innerHTML = `<p class="text-red-500 text-sm">Failed to load history: ${e.message}</p>`;
+  }
+}
+
+async function loadReport(id) {
+  const resp = await fetch("/api/reports/" + id);
+  const data = await resp.json();
+  currentResults = data.results;
+  renderResults({ results: data.results, week_label: data.week_label });
+  showSection("results");
+}
+
+async function deleteReport(id) {
+  if (!confirm("Delete this report?")) return;
+  await fetch("/api/reports/" + id, { method: "DELETE" });
+  loadHistory();
+}
+</script>
+</body>
+</html>
