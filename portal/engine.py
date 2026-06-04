@@ -690,7 +690,7 @@ _AGEING_BUCKETS = [
 
 
 def _assign_bucket(days: float | None) -> str | None:
-    if days is None:
+    if days is None or pd.isna(days):
         return None
     for b in _AGEING_BUCKETS:
         if b["max"] is None:
@@ -764,10 +764,19 @@ def analyze_rdin_ageing(df: pd.DataFrame) -> dict:
                 "max_tat_days": None, "bucket_summary": [], "bucket_labels": [],
                 "by_category": [], "by_subcategory": [], "by_queue": []}
 
-    # Parse TAT → days
-    df["_tat_days"] = df[tat_col].astype(str).apply(
-        lambda v: round(_parse_tat_minutes(v) / 1440, 4) if _parse_tat_minutes(v) is not None else None
-    )
+    # Parse TAT → days; blank/NaN → None (counted as No TAT / open)
+    _BLANK_STRS = {"", "nan", "none", "nat", "n/a", "-"}
+
+    def _tat_to_days(val) -> float | None:
+        if pd.isna(val):
+            return None
+        s = str(val).strip().lower()
+        if s in _BLANK_STRS:
+            return None
+        mins = _parse_tat_minutes(val)
+        return round(mins / 1440, 4) if mins is not None else None
+
+    df["_tat_days"] = df[tat_col].apply(_tat_to_days)
     df["_tat_days0"] = df["_tat_days"].fillna(0.0)   # no-TAT treated as 0
     df["_bucket"]    = df["_tat_days"].apply(_assign_bucket)
 
