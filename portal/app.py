@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from engine import analyze_file
@@ -121,6 +121,33 @@ def api_get_report(report_id: str):
         raise HTTPException(404, "Report not found.")
     r = dict(row)
     r["results"] = json.loads(r["results"])
+
+    # Auto-backfill: re-analyse stored file if any computed data is missing
+    kap = r["results"].get("kapture", {})
+    sap = r["results"].get("sap_tickets", {})
+    needs_backfill = (
+        "rdin" not in kap
+        or "re_top_subcats" not in kap
+        or "re_top_subcats" not in sap
+        or "top_subcats" not in r["results"].get("so_output", {})
+        or "kpi" not in r["results"]
+        or "rdin_ageing" not in r["results"]
+    )
+    if needs_backfill:
+        upload_files = sorted(UPLOAD_DIR.glob(f"{report_id}_*"))
+        if upload_files:
+            try:
+                fresh = analyze_file(io.BytesIO(upload_files[0].read_bytes()))
+                r["results"] = fresh
+                with _db() as conn:
+                    conn.execute(
+                        "UPDATE reports SET results = ? WHERE id = ?",
+                        (json.dumps(fresh), report_id),
+                    )
+                    conn.commit()
+            except Exception:
+                pass
+
     return r
 
 
@@ -136,9 +163,25 @@ def api_delete_report(report_id: str):
 # Serve frontend
 # ---------------------------------------------------------------------------
 
+@app.get("/download-template")
+def download_template():
+    path = STATIC_DIR / "upload_template.xlsx"
+    if not path.exists():
+        raise HTTPException(404, "Template file not found.")
+    return FileResponse(
+        path=str(path),
+        filename="Care_Weekly_Dashboard_Template.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def serve_index():
-    return (STATIC_DIR / "index.html").read_text()
+    content = (STATIC_DIR / "index.html").read_text()
+    return HTMLResponse(content=content, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+    })
 
 
 # Mount static assets (CSS, JS if any)

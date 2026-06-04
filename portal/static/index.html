@@ -44,7 +44,17 @@
   <!-- ===== UPLOAD SECTION ===== -->
   <div id="sec-upload">
     <div class="bg-white rounded-xl shadow p-6 mb-6">
-      <h2 class="text-lg font-semibold text-gray-800 mb-4">Upload Weekly Data File</h2>
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-lg font-semibold text-gray-800">Upload Weekly Data File</h2>
+        <a href="/download-template" download
+          class="flex items-center gap-2 text-sm text-blue-700 border border-blue-300 hover:bg-blue-50 px-4 py-2 rounded-lg font-medium transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          Download Template
+        </a>
+      </div>
       <div id="drop-zone" class="rounded-lg p-8 text-center mb-4 cursor-pointer" onclick="document.getElementById('file-input').click()">
         <svg class="mx-auto mb-2 text-blue-400 w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
@@ -96,6 +106,8 @@
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(2)">SAP Tickets</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(3)">SO Output</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(4)">Overall SAP</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(5)">KPI Calculations</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(6)">RD.IN Ageing</button>
       </div>
       <div id="tab-content" class="p-6"></div>
     </div>
@@ -125,6 +137,8 @@
 // -----------------------------------------------------------------------
 // State
 // -----------------------------------------------------------------------
+const API_BASE = window.location.protocol === 'file:' ? 'http://localhost:8000' : '';
+
 let selectedFile = null;
 let currentResults = null;
 let currentTab = 0;
@@ -217,7 +231,7 @@ async function runAnalysis() {
     fd.append("file", selectedFile);
     fd.append("week_label", document.getElementById("week-label").value.trim());
 
-    const resp = await fetch("/api/analyze", { method: "POST", body: fd });
+    const resp = await fetch(API_BASE + "/api/analyze", { method: "POST", body: fd });
     const data = await resp.json();
 
     if (!resp.ok) {
@@ -282,6 +296,8 @@ function switchTab(idx) {
     () => renderSapTickets(r.sap_tickets),
     () => renderSoOutput(r.so_output),
     () => renderOverallSap(r.overall_sap),
+    () => renderKPI(r.kpi, r.final_output, r.overall_sap),
+    () => renderRdinAgeing(r.rdin_ageing),
   ];
   document.getElementById("tab-content").innerHTML = renders[idx]();
 }
@@ -360,9 +376,50 @@ function renderKapture(d) {
   rows.push(spacerRow());
   rows.push(headerRow("Request + Enquiry", d.request_enquiry.total));
   rows.push(...buildBreakdownRows(d.request_enquiry.breakdown, SUB_BUCKETS));
+
+  // RD.IN section — data computed inside analyze_kapture on every upload
+  const rdin = d.rdin;
+  let rdInHtml = '';
+  if (rdin && rdin.total > 0) {
+    const tatRows = [
+      ['Total Complaints TAT (min)',              rdin.tat_total_minutes != null ? fmt(rdin.tat_total_minutes)                       : 'N/A'],
+      ['Avg. TAT per Complaint Ticket (min)',     rdin.tat_avg_minutes   != null ? Number(rdin.tat_avg_minutes).toFixed(2)           : 'N/A'],
+      ['Avg. TAT per Complaint Ticket (hrs)',     rdin.tat_avg_hours     != null ? Number(rdin.tat_avg_hours).toFixed(2)             : 'N/A'],
+    ];
+    rdInHtml = `
+      <div class="mt-6">
+        <h3 class="text-base font-semibold text-gray-800 mb-3">RD.IN Channel Details</h3>
+        <div class="grid grid-cols-5 gap-4">
+          <div class="bg-blue-50 rounded-lg p-4 text-center border border-blue-100">
+            <p class="text-xs text-gray-500 mb-1">RD.IN Total Tickets</p>
+            <p class="text-2xl font-bold text-blue-800">${fmt(rdin.total)}</p>
+          </div>
+          <div class="bg-red-50 rounded-lg p-4 text-center border border-red-100">
+            <p class="text-xs text-gray-500 mb-1">RD.IN Complaint Tickets</p>
+            <p class="text-2xl font-bold text-red-700">${fmt(rdin.complaints)}</p>
+          </div>
+          ${tatRows.map(([label, val]) => `
+          <div class="bg-gray-50 rounded-lg p-4 text-center border border-gray-200">
+            <p class="text-xs text-gray-500 mb-1">${label}</p>
+            <p class="text-xl font-bold text-gray-800">${val}</p>
+          </div>`).join('')}
+        </div>
+        ${rdin.tat_total_minutes == null ? '<p class="text-xs text-gray-400 mt-2">TAT column not detected in Kapture sheet.</p>' : ''}
+      </div>`;
+  } else {
+    rdInHtml = `
+      <div class="mt-6">
+        <h3 class="text-base font-semibold text-gray-800 mb-2">RD.IN Channel Details</h3>
+        <p class="text-sm text-gray-400 bg-gray-50 border border-gray-200 rounded px-4 py-3">
+          No RD.IN data found. Ensure the Kapture sheet has a <strong>Channel</strong> or <strong>Source</strong> column with values containing "RD.IN".
+        </p>
+      </div>`;
+  }
+
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">Kapture Ticket Analysis</h3>
-    ${dashTable(["Category", "Count", "% of Complaints"], rows)}`;
+    ${dashTable(["Category", "Count", "% of Group"], rows)}
+    ${rdInHtml}`;
 }
 
 // --- SAP Tickets ---
@@ -428,11 +485,349 @@ function renderOverallSap(d) {
 }
 
 // -----------------------------------------------------------------------
+// KPI Calculations
+// -----------------------------------------------------------------------
+
+function renderKPI(kpi, finalOutput, overallSap) {
+
+  // ---- Section 1: Category Analysis ----
+  // Always use finalOutput (Kapture + SAP + SO combined), excluding Others, top 5 by count
+  function topFromBreakdown(breakdown, total, topN) {
+    return Object.entries(breakdown)
+      .filter(function(e) { return e[0] !== 'Others' && e[1].count > 0; })
+      .sort(function(a, b) { return b[1].count - a[1].count; })
+      .slice(0, topN)
+      .map(function(e) {
+        return { category: e[0], count: e[1].count, pct: e[1].pct, top_sub_categories: [] };
+      });
+  }
+
+  // If kpi has sub-category data (fresh upload), merge it in
+  function mergeSubCats(baseCats, kpiCats) {
+    if (!kpiCats || kpiCats.length === 0) return baseCats;
+    var map = {};
+    kpiCats.forEach(function(c) { map[c.category] = c.top_sub_categories || []; });
+    return baseCats.map(function(c) {
+      return Object.assign({}, c, { top_sub_categories: map[c.category] || [] });
+    });
+  }
+
+  var reTotal   = finalOutput ? finalOutput.request_enquiry.total : 0;
+  var compTotal = finalOutput ? finalOutput.complaints.total : 0;
+  var basReC    = finalOutput ? topFromBreakdown(finalOutput.request_enquiry.breakdown, reTotal, 5) : [];
+  var baseCompC = finalOutput ? topFromBreakdown(finalOutput.complaints.breakdown, compTotal, 5) : [];
+
+  var hasSubs     = kpi && kpi.re_categories && kpi.re_categories.length > 0;
+  var reCategories   = hasSubs ? mergeSubCats(basReC,    kpi.re_categories)   : basReC;
+  var compCategories = hasSubs ? mergeSubCats(baseCompC, kpi.comp_categories) : baseCompC;
+
+  function categoryTable(title, categories, groupTotal, showSubs, totalLabel) {
+    if (!categories || categories.length === 0) {
+      return '<div><h4 class="text-sm font-semibold text-gray-700 mb-2">' + title + '</h4><p class="text-gray-400 text-sm">No data available.</p></div>';
+    }
+    var rows = categories.map(function(cat) {
+      var topSub = showSubs && cat.top_sub_categories && cat.top_sub_categories[0];
+      var subPctOfTotal = (showSubs && topSub && groupTotal > 0)
+        ? fmtPct(topSub.count / groupTotal * 100) : '–';
+      return '<tr>' +
+        '<td class="pl-2 font-medium">' + cat.category + '</td>' +
+        '<td class="text-right">' + fmt(cat.count) + '</td>' +
+        '<td class="text-right">' + fmtPct(cat.pct) + '</td>' +
+        (showSubs ? '<td class="text-sm text-gray-600">' + (topSub ? fmtPct(topSub.pct) + ' &nbsp;' + topSub.name : '–') + '</td>' : '') +
+        (showSubs ? '<td class="text-right text-sm font-semibold text-indigo-700">' + subPctOfTotal + '</td>' : '') +
+        '</tr>';
+    }).join('');
+    var subCols = showSubs
+      ? '<th>Major Sub-Category Contributor</th><th class="text-right">Sub-cat % of Total ' + (totalLabel || 'Group') + '</th>'
+      : '';
+    var w1 = showSubs ? 'w-1/5' : 'w-1/2';
+    return '<div>' +
+      '<h4 class="text-sm font-semibold text-gray-700 mb-2">' + title +
+        ' &nbsp;<span class="text-gray-400 font-normal">(Total: ' + fmt(groupTotal) + ')</span></h4>' +
+      '<table class="dash-table w-full border-collapse rounded-lg overflow-hidden shadow-sm">' +
+        '<thead><tr>' +
+          '<th class="' + w1 + '">Category</th>' +
+          '<th class="w-1/6 text-right">Count</th>' +
+          '<th class="w-1/6 text-right">% of Group</th>' +
+          subCols +
+        '</tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table></div>';
+  }
+
+  var catSection =
+    '<div class="mb-8">' +
+    '<h3 class="text-base font-semibold text-gray-800 mb-1">1. Category Analysis — All Sources (Kapture + SAP + SO)</h3>' +
+    (!hasSubs ? '<p class="text-xs text-amber-600 mb-3 bg-amber-50 border border-amber-200 rounded px-3 py-2">Re-upload the file to add sub-category contributor details.</p>' : '') +
+    '<div class="grid grid-cols-2 gap-6">' +
+      categoryTable('Inquiry &amp; Request — Top 5 Categories', reCategories, reTotal, hasSubs, 'Inquiry &amp; Request') +
+      categoryTable('Complaints — Top 5 Categories', compCategories, compTotal, hasSubs, 'Complaints') +
+    '</div></div>';
+
+  // ---- Section 2: RD.IN Details ----
+  var rdin = (kpi && kpi.rdin) ? kpi.rdin : null;
+  var rdCards = '';
+  if (rdin) {
+    var rdItems = [
+      ['RD.IN Total Tickets', fmt(rdin.total)],
+      ['RD.IN Complaint Tickets', fmt(rdin.complaints)],
+      ['Complaints TAT — Total (min)', rdin.tat_total_minutes != null ? fmt(rdin.tat_total_minutes) : 'N/A'],
+      ['Complaints TAT — Avg (min)', rdin.tat_avg_minutes != null ? Number(rdin.tat_avg_minutes).toFixed(2) : 'N/A'],
+      ['Complaints TAT — Avg (hrs)', rdin.tat_avg_hours != null ? Number(rdin.tat_avg_hours).toFixed(2) : 'N/A'],
+    ];
+    rdCards = '<div class="grid grid-cols-5 gap-4">' +
+      rdItems.map(function(item) {
+        return '<div class="bg-blue-50 rounded-lg p-4 text-center border border-blue-100">' +
+          '<p class="text-xs text-gray-500 mb-1">' + item[0] + '</p>' +
+          '<p class="text-xl font-bold text-blue-800">' + item[1] + '</p></div>';
+      }).join('') + '</div>' +
+      (rdin.tat_total_minutes == null ? '<p class="text-xs text-gray-400 mt-2">TAT column not detected in Kapture sheet.</p>' : '');
+  } else {
+    rdCards = '<p class="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded px-3 py-2">Re-upload the file to populate RD.IN channel metrics.</p>';
+  }
+  var rdInSection =
+    '<div class="mb-8">' +
+    '<h3 class="text-base font-semibold text-gray-800 mb-3">2. RD.IN Channel Details</h3>' +
+    rdCards + '</div>';
+
+  // ---- Section 3: Orders Input & Performance Metrics ----
+  const perfSection = `
+    <div>
+      <h3 class="text-base font-semibold text-gray-800 mb-3">3. Contact Center — Performance & Metrics</h3>
+      <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 mb-5">
+        <p class="text-sm font-medium text-gray-700 mb-3">Enter Orders Input</p>
+        <div class="flex items-end gap-4">
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">Total Orders (B2B + B2C)</label>
+            <input id="kpi-total-orders" type="number" min="0" placeholder="e.g. 269201"
+              class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-44 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              oninput="calculateKPI()"/>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-500 mb-1">B2C Orders (RD.IN + RD Offline)</label>
+            <input id="kpi-b2c-orders" type="number" min="0" placeholder="e.g. 161215"
+              class="border border-gray-300 rounded-lg px-3 py-2 text-sm w-44 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              oninput="calculateKPI()"/>
+          </div>
+          <div class="pb-0.5">
+            <p class="text-xs text-gray-500 mb-1">B2B &amp; Distributor Orders</p>
+            <p id="kpi-b2b-display" class="text-sm font-bold text-gray-700 px-3 py-2">—</p>
+          </div>
+        </div>
+      </div>
+      <div id="kpi-metrics-output"></div>
+    </div>`;
+
+  return `
+    <h3 class="text-base font-semibold text-gray-800 mb-5">KPI Calculations — Contact Center Performance</h3>
+    ${catSection}
+    ${rdInSection}
+    ${perfSection}`;
+}
+
+function calculateKPI() {
+  const r = currentResults;
+  if (!r) return;
+
+  const totalOrdersInput = parseInt(document.getElementById('kpi-total-orders').value) || 0;
+  const b2cOrdersInput   = parseInt(document.getElementById('kpi-b2c-orders').value) || 0;
+  const b2bOrders        = Math.max(0, totalOrdersInput - b2cOrdersInput);
+
+  document.getElementById('kpi-b2b-display').textContent =
+    totalOrdersInput > 0 ? fmt(b2bOrders) : '—';
+
+  if (!totalOrdersInput) {
+    document.getElementById('kpi-metrics-output').innerHTML =
+      `<p class="text-gray-400 text-sm">Enter Total Orders to calculate KPI metrics.</p>`;
+    return;
+  }
+
+  const kpi         = r.kpi || {};
+  const rdin        = kpi.rdin || {};
+  const finalOutput = r.final_output;
+  const overallSap  = r.overall_sap;
+
+  // ---- Overall ----
+  const ov_calls      = finalOutput.total;
+  const ov_complaints = finalOutput.complaints.total;
+  const ov_cr         = totalOrdersInput ? ov_calls / totalOrdersInput * 100 : 0;
+  const ov_coP        = totalOrdersInput ? ov_complaints / totalOrdersInput * 100 : 0;
+  const ov_coC        = ov_calls ? ov_complaints / ov_calls * 100 : 0;
+
+  // ---- B2C ----
+  const b2c_calls      = overallSap.total + (rdin.total || 0);
+  const b2c_complaints = overallSap.complaints.total + (rdin.complaints || 0);
+  const b2c_cr         = b2cOrdersInput ? b2c_calls / b2cOrdersInput * 100 : 0;
+  const b2c_coP        = b2cOrdersInput ? b2c_complaints / b2cOrdersInput * 100 : 0;
+  const b2c_coC        = b2c_calls ? b2c_complaints / b2c_calls * 100 : 0;
+
+  // ---- B2B ----
+  const b2b_calls      = ov_calls - b2c_calls;
+  const b2b_complaints = ov_complaints - b2c_complaints;
+  const b2b_cr         = b2bOrders ? b2b_calls / b2bOrders * 100 : 0;
+  const b2b_coP        = b2bOrders ? b2b_complaints / b2bOrders * 100 : 0;
+  const b2b_coC        = b2b_calls ? b2b_complaints / b2b_calls * 100 : 0;
+
+  function kpiTable(title, subtitle, orders, calls, cr, complaints, coP, coC) {
+    const rows = [
+      ['Total Orders', fmt(orders), ''],
+      ['Total Calls', fmt(calls), ''],
+      ['Contact Rate', fmtPct(cr), ''],
+      ['Total Complaints', fmt(complaints), ''],
+      ['Complaints / Orders %', fmtPct(coP), ''],
+      ['Complaints / Contact %', fmtPct(coC), ''],
+    ];
+    return `
+      <div>
+        <div class="bg-blue-900 text-white px-4 py-2 rounded-t-lg">
+          <span class="font-semibold text-sm">${title}</span>
+          ${subtitle ? `<span class="text-blue-300 text-xs ml-2">${subtitle}</span>` : ''}
+        </div>
+        <table class="w-full border border-t-0 border-gray-200 rounded-b-lg overflow-hidden text-sm">
+          <tbody>
+            ${rows.map(([label, val], i) => `
+              <tr class="${i % 2 === 0 ? 'bg-white' : 'bg-gray-50'}">
+                <td class="px-4 py-2.5 text-gray-600 font-medium">${label}</td>
+                <td class="px-4 py-2.5 text-right font-bold text-gray-900">${val}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  document.getElementById('kpi-metrics-output').innerHTML = `
+    <div class="grid grid-cols-3 gap-5">
+      ${kpiTable('Overall — One Electronics', 'B2B + B2C',
+          totalOrdersInput, ov_calls, ov_cr, ov_complaints, ov_coP, ov_coC)}
+      ${kpiTable('Electronics B2C', 'RD Offline + RD Online',
+          b2cOrdersInput, b2c_calls, b2c_cr, b2c_complaints, b2c_coP, b2c_coC)}
+      ${kpiTable('Electronics B2B', 'JSS + JMD + Distributor',
+          b2bOrders, b2b_calls, b2b_cr, b2b_complaints, b2b_coP, b2b_coC)}
+    </div>
+    <p class="text-xs text-gray-400 mt-3">
+      B2C Calls = Overall SAP (${fmt(overallSap.total)}) + RD.IN Tickets (${fmt(rdin.total || 0)}) &nbsp;|&nbsp;
+      B2B Calls = Overall Calls − B2C Calls
+    </p>`;
+}
+
+// -----------------------------------------------------------------------
+// RD.IN Complaints Ageing Dashboard
+// -----------------------------------------------------------------------
+function renderRdinAgeing(d) {
+  if (!d || d.error) {
+    return `<div class="text-center py-16 text-gray-400">
+      <p class="text-lg font-medium mb-2">RD.IN Ageing data not available</p>
+      <p class="text-sm">${d && d.error ? d.error : 'Please re-upload the file.'}</p>
+    </div>`;
+  }
+  if (!d.total) {
+    return `<div class="text-center py-16 text-gray-400"><p class="text-lg">No RD.IN Complaint tickets found in this file.</p></div>`;
+  }
+
+  const bucketLabels = (d.bucket_labels || []).concat(['No TAT (Open)']);
+
+  // ── KPI Cards ──
+  function kpiCard(label, value, sub) {
+    return `<div class="bg-white rounded-xl border border-gray-200 shadow-sm px-5 py-4">
+      <div class="text-xs text-gray-500 font-medium uppercase tracking-wide mb-1">${label}</div>
+      <div class="text-2xl font-bold text-gray-800">${value}</div>
+      ${sub ? `<div class="text-xs text-gray-400 mt-1">${sub}</div>` : ''}
+    </div>`;
+  }
+
+  const kpiSection = `<div class="grid grid-cols-3 gap-4 mb-6 lg:grid-cols-6">
+    ${kpiCard('Total Tickets',    fmt(d.total),    'RD.IN Complaints')}
+    ${kpiCard('Resolved',         fmt(d.resolved), fmtPct(d.resolved / d.total * 100) + ' of total')}
+    ${kpiCard('Open / No TAT',    fmt(d.open_no_tat), fmtPct(d.open_no_tat / d.total * 100) + ' of total')}
+    ${kpiCard('Avg TAT (Resolved)', d.avg_tat_resolved != null ? d.avg_tat_resolved.toFixed(2) + ' days' : '–', 'Resolved tickets only')}
+    ${kpiCard('Avg TAT (All)',    d.avg_tat_all != null ? d.avg_tat_all.toFixed(2) + ' days' : '–', 'Open counted as 0')}
+    ${kpiCard('Max TAT',          d.max_tat_days != null ? d.max_tat_days.toFixed(2) + ' days' : '–', 'Resolved tickets')}
+  </div>`;
+
+  // ── Bucket Summary ──
+  const bktRows = (d.bucket_summary || []).map(b => {
+    const isOpen = b.label === 'No TAT (Open)';
+    const bar = !isOpen && d.resolved > 0
+      ? `<div class="w-full bg-gray-100 rounded-full h-2 mt-1"><div class="bg-blue-500 h-2 rounded-full" style="width:${Math.min(b.pct_of_resolved, 100)}%"></div></div>`
+      : '';
+    return `<tr>
+      <td class="pl-2 font-medium ${isOpen ? 'text-amber-700' : ''}">${b.label}</td>
+      <td class="text-right">${fmt(b.count)}</td>
+      <td class="text-right">${isOpen ? '–' : fmtPct(b.pct_of_resolved)}</td>
+      <td class="text-right">${fmtPct(b.pct_of_total)}</td>
+      <td class="pl-4 w-32">${bar}</td>
+    </tr>`;
+  }).join('');
+
+  const bucketSection = `<div class="mb-8">
+    <h3 class="text-base font-semibold text-gray-800 mb-3">Ageing Bucket Summary</h3>
+    <div class="max-w-2xl">
+      <table class="dash-table w-full border-collapse rounded-lg overflow-hidden shadow-sm">
+        <thead><tr>
+          <th class="w-1/4">Bucket</th>
+          <th class="text-right">Count</th>
+          <th class="text-right">% of Resolved</th>
+          <th class="text-right">% of Total</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${bktRows}</tbody>
+      </table>
+    </div>
+  </div>`;
+
+  // ── Ageing Matrix (Category / Sub-category / Queue) ──
+  function ageingMatrix(title, rows) {
+    if (!rows || rows.length === 0) return '';
+    const bucketCols = (d.bucket_labels || []);
+    const allLabels  = bucketCols.concat(['No TAT (Open)']);
+    const thead = `<thead><tr>
+      <th class="w-1/5">Name</th>
+      ${bucketCols.map(l => `<th class="text-right">${l}</th>`).join('')}
+      <th class="text-right text-amber-300">No TAT</th>
+      <th class="text-right">Total</th>
+      <th class="text-right">Avg TAT (days)</th>
+    </tr></thead>`;
+    const tbody = rows.map(r => {
+      const bkts = bucketCols.map(l =>
+        `<td class="text-right">${fmt(r.buckets[l] || 0)}</td>`
+      ).join('');
+      return `<tr>
+        <td class="pl-2 font-medium">${r.name}</td>
+        ${bkts}
+        <td class="text-right text-amber-700">${fmt(r.no_tat)}</td>
+        <td class="text-right font-semibold">${fmt(r.total)}</td>
+        <td class="text-right text-indigo-700 font-semibold">${r.avg_tat_all != null ? r.avg_tat_all.toFixed(2) : '–'}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="mb-8">
+      <h3 class="text-base font-semibold text-gray-800 mb-3">${title}</h3>
+      <div class="overflow-x-auto">
+        <table class="dash-table w-full border-collapse rounded-lg overflow-hidden shadow-sm text-xs">
+          ${thead}<tbody>${tbody}</tbody>
+        </table>
+      </div>
+    </div>`;
+  }
+
+  return `
+    <div class="mb-4">
+      <h2 class="text-xl font-bold text-gray-800">RD.IN Complaints — Ticket Ageing Dashboard</h2>
+      <p class="text-xs text-gray-500 mt-1">Ageing measured by TAT (resolution time). No TAT = open / unresolved. Avg TAT (All) counts open tickets as 0.</p>
+    </div>
+    ${kpiSection}
+    ${bucketSection}
+    ${ageingMatrix('Ageing by Category', d.by_category)}
+    ${ageingMatrix('Ageing by Sub-Category', d.by_subcategory)}
+    ${ageingMatrix('Ageing by Queue Name', d.by_queue)}
+  `;
+}
+
+// -----------------------------------------------------------------------
 // History
 // -----------------------------------------------------------------------
 async function loadHistory() {
   try {
-    const resp = await fetch("/api/reports");
+    const resp = await fetch(API_BASE + "/api/reports");
     const reports = await resp.json();
     const el = document.getElementById("history-list");
     if (!reports.length) {
@@ -467,7 +862,7 @@ async function loadHistory() {
 }
 
 async function loadReport(id) {
-  const resp = await fetch("/api/reports/" + id);
+  const resp = await fetch(API_BASE + "/api/reports/" + id);
   const data = await resp.json();
   currentResults = data.results;
   renderResults({ results: data.results, week_label: data.week_label });
@@ -476,7 +871,7 @@ async function loadReport(id) {
 
 async function deleteReport(id) {
   if (!confirm("Delete this report?")) return;
-  await fetch("/api/reports/" + id, { method: "DELETE" });
+  await fetch(API_BASE + "/api/reports/" + id, { method: "DELETE" });
   loadHistory();
 }
 </script>

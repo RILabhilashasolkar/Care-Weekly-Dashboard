@@ -73,8 +73,103 @@ def _find_col(df: pd.DataFrame, candidates: list[str]) -> str | None:
     return None
 
 
+def _parse_tat_minutes(val: str) -> float | None:
+    """Parse TAT strings like '1 Day(s) 9 Hr(s) 27 Min(s) 1 Sec(s)' into total minutes."""
+    try:
+        v = str(val).lower()
+        days    = int(re.search(r"(\d+)\s*day",  v).group(1)) if re.search(r"\d+\s*day",  v) else 0
+        hours   = int(re.search(r"(\d+)\s*hr",   v).group(1)) if re.search(r"\d+\s*hr",   v) else 0
+        minutes = int(re.search(r"(\d+)\s*min",  v).group(1)) if re.search(r"\d+\s*min",  v) else 0
+        seconds = int(re.search(r"(\d+)\s*sec",  v).group(1)) if re.search(r"\d+\s*sec",  v) else 0
+        total   = days * 1440 + hours * 60 + minutes + seconds / 60
+        return round(total, 2)
+    except Exception:
+        # Fallback: try plain numeric
+        try:
+            return float(val)
+        except Exception:
+            return None
+
+
 def _pct(count: int, total: int) -> float:
     return round(count / total * 100, 2) if total else 0.0
+
+
+# Canonical sub-category name normalization rules (pattern → canonical name)
+_SUBCAT_NORM_RULES: list[tuple[list[str], str]] = [
+    # Repair
+    (["repair visit delayed", "delayed by engineer", "engineer delay"],    "Repair Visit Delayed by Engineer"),
+    (["no update on resolution", "no update", "visit done no update"],     "No Update on Resolution"),
+    (["part pending", "spare part"],                                        "Part Pending"),
+    (["improper repair", "poor quality repair"],                           "Improper Repair"),
+    (["extra charges for repair", "overcharging repair"],                  "Extra Charges for Repair"),
+    (["repair order request", "repair service request", "repair request"], "Repair Request"),
+    # Demo & Installation
+    (["delay in engineer visit", "delay in installation"],                 "Delay in Engineer Visit"),
+    (["installation order request", "installation service request",
+      "installation request", "demo/installation request",
+      "demo and installation request", "re-installation request",
+      "reinstallation request"],                                           "Installation Request"),
+    (["improper installation", "improper demo"],                           "Improper Installation/Demo"),
+    (["extra charges for installation", "extra charges taken for install"],"Extra Charges for Installation"),
+    # PMS
+    (["pms visit delayed", "pms engineer delay", "pms delay"],            "PMS Visit Delayed by Engineer"),
+    (["pms service request", "pms request"],                               "PMS Service Request"),
+    # Delivery
+    (["delay in delivery", "shipment delay", "in transit"],               "Delay in Delivery"),
+    (["status marked", "order not received", "delivery status"],          "Order Not Received / Status"),
+    (["accessories", "freebie", "booklet not received"],                   "Accessories/Freebie Not Received"),
+    (["wrong product"],                                                    "Wrong Product Delivered"),
+    # Invoice/Billing
+    (["duplicate invoice", "invoice copy"],                               "Duplicate Invoice Copy"),
+    (["gst issue", "gst"],                                                 "GST Issue"),
+    # Refund
+    (["refund not received", "delay in refund"],                           "Refund Not Received/Delayed"),
+    (["refund request"],                                                   "Refund Request"),
+    # Return/Exchange
+    (["change of mind", "return request", "reverse pickup",
+      "exchange request"],                                                 "Return/Exchange Request"),
+    # Warranty
+    (["incorrect warranty"],                                               "Incorrect Warranty Details"),
+]
+
+# Standard sub-category name for SO records, keyed by bucket
+_SO_SUBCAT_NAMES: dict[str, str] = {
+    "Repair":                 "Repair Request",
+    "Demo & Installation":    "Installation Request",
+    "PMS":                    "PMS Service Request",
+    "Delivery related":       "Delivery Request",
+    "Invoice/Billing related":"Invoice/Billing Request",
+    "Return":                 "Return Request",
+    "Warranty":               "Warranty Request",
+    "Refund":                 "Refund Request",
+    "Others":                 "Other Request",
+}
+
+
+def _normalize_subcat(name: str) -> str:
+    """Map raw sub-category names to a canonical form for cross-source comparison."""
+    n = name.lower().strip()
+    for patterns, canonical in _SUBCAT_NORM_RULES:
+        if any(p in n for p in patterns):
+            return canonical
+    return " ".join(w.capitalize() for w in name.strip().split())
+
+
+def _collect_rawsubs(group_df: pd.DataFrame, group_total: int, top_n: int = 5) -> dict:
+    """Return {bucket: [{name, count, pct}]} of top raw sub-categories per bucket."""
+    result: dict = {}
+    for bucket in SUB_BUCKETS:
+        rows = group_df[group_df["_sub"] == bucket]
+        subs = []
+        for name, cnt in rows["_rawsub"].value_counts().head(top_n).items():
+            n = str(name).strip()
+            if n:
+                subs.append({"name": n, "count": int(cnt),
+                             "pct": _pct(int(cnt), group_total)})
+        if subs:
+            result[bucket] = subs
+    return result
 
 
 def _build_section(sub_col: pd.Series, order: list[str], total: int) -> dict:
@@ -176,9 +271,12 @@ def _kap_subbucket(category: str, sub_category: str) -> str:
 
 
 def analyze_kapture(df: pd.DataFrame) -> dict:
-    vertical_col = _find_col(df, ["vertical"])
-    category_col = _find_col(df, ["category"])
+    vertical_col    = _find_col(df, ["vertical"])
+    category_col    = _find_col(df, ["category"])
     subcategory_col = _find_col(df, ["sub category", "sub_category", "subcategory"])
+    channel_col     = _find_col(df, ["channel", "source channel", "ticket channel", "source"])
+    tat_col         = _find_col(df, ["tat", "tat (min)", "tat(min)",
+                                      "resolution time", "handling time", "ticket tat"])
 
     if not vertical_col:
         raise ValueError("Kapture sheet: 'Vertical' column not found.")
@@ -191,11 +289,36 @@ def analyze_kapture(df: pd.DataFrame) -> dict:
     cat = df[category_col].fillna("").astype(str)
     sub = df[subcategory_col].fillna("").astype(str) if subcategory_col else pd.Series([""] * len(df))
 
-    df["_top"] = df[vertical_col].apply(_kap_toplevel)
-    df["_sub"] = [_kap_subbucket(c, s) for c, s in zip(cat, sub)]
+    df["_top"]    = df[vertical_col].apply(_kap_toplevel)
+    df["_sub"]    = [_kap_subbucket(c, s) for c, s in zip(cat, sub)]
+    df["_rawsub"] = df[subcategory_col].fillna("").astype(str) if subcategory_col else ""
 
     comp = df[df["_top"] == "Complaints"]
-    req = df[df["_top"] == "Request + Enquiry"]
+    req  = df[df["_top"] == "Request + Enquiry"]
+
+    # Top raw sub-categories per bucket (for KPI combined sub-cat analysis)
+    re_top_subcats   = _collect_rawsubs(req,  len(req),  top_n=10)
+    comp_top_subcats = _collect_rawsubs(comp, len(comp), top_n=10)
+
+    # RD.IN channel metrics
+    def _is_rdin(val: str) -> bool:
+        return "rdin" in re.sub(r"[\s.\-_]", "", val.lower())
+
+    rdin: dict = {"total": 0, "complaints": 0,
+                  "tat_total_minutes": None, "tat_avg_minutes": None, "tat_avg_hours": None}
+    if channel_col:
+        rdin_mask    = df[channel_col].astype(str).apply(_is_rdin)
+        rdin_df      = df[rdin_mask]
+        rdin["total"]      = int(len(rdin_df))
+        rdin["complaints"] = int((rdin_df["_top"] == "Complaints").sum())
+
+        rdin_comp = rdin_df[rdin_df["_top"] == "Complaints"]
+        if tat_col and len(rdin_comp) > 0:
+            tat_vals = rdin_comp[tat_col].astype(str).apply(_parse_tat_minutes).dropna()
+            if len(tat_vals) > 0:
+                rdin["tat_total_minutes"] = round(float(tat_vals.sum()), 2)
+                rdin["tat_avg_minutes"]   = round(float(tat_vals.mean()), 2)
+                rdin["tat_avg_hours"]     = round(float(tat_vals.mean()) / 60, 2)
 
     return {
         "total": len(df),
@@ -207,6 +330,9 @@ def analyze_kapture(df: pd.DataFrame) -> dict:
             "total": len(req),
             "breakdown": _build_section(req["_sub"], SUB_BUCKETS, len(req)),
         },
+        "re_top_subcats":   re_top_subcats,
+        "comp_top_subcats": comp_top_subcats,
+        "rdin":             rdin,
     }
 
 # ---------------------------------------------------------------------------
@@ -318,11 +444,12 @@ def analyze_sap_tickets(df: pd.DataFrame) -> dict:
     cat = df[cat_col].fillna("").astype(str)
     sub = df[sub_col].fillna("").astype(str) if sub_col else pd.Series([""] * len(df))
 
-    df["_top"] = sub.apply(_sap_toplevel)
-    df["_sub"] = [_sap_subbucket(c, s) for c, s in zip(cat, sub)]
+    df["_top"]    = sub.apply(_sap_toplevel)
+    df["_sub"]    = [_sap_subbucket(c, s) for c, s in zip(cat, sub)]
+    df["_rawsub"] = sub  # SAP sub_category as raw sub-cat name
 
     comp = df[df["_top"] == "Complaints"]
-    ref = df[df["_top"] == "Request + Enquiry + Feedback"]
+    ref  = df[df["_top"] == "Request + Enquiry + Feedback"]
 
     return {
         "total": len(df),
@@ -334,6 +461,8 @@ def analyze_sap_tickets(df: pd.DataFrame) -> dict:
             "total": len(ref),
             "breakdown": _build_section(ref["_sub"], SUB_BUCKETS, len(ref)),
         },
+        "re_top_subcats":   _collect_rawsubs(ref,  len(ref),  top_n=10),
+        "comp_top_subcats": _collect_rawsubs(comp, len(comp), top_n=10),
     }
 
 # ---------------------------------------------------------------------------
@@ -373,9 +502,20 @@ def analyze_so_order(df: pd.DataFrame) -> dict:
     df["_sub"] = df[rtd_col].fillna("").astype(str).apply(_so_subbucket)
 
     total = len(df)
+
+    # SO records are all R+E; map each bucket to its canonical sub-category name
+    top_subcats: dict = {}
+    for bucket in SUB_BUCKETS:
+        cnt = int((df["_sub"] == bucket).sum())
+        if cnt > 0:
+            canonical = _SO_SUBCAT_NAMES.get(bucket, bucket)
+            top_subcats[bucket] = [{"name": canonical, "count": cnt,
+                                     "pct": _pct(cnt, total)}]
+
     return {
         "total": total,
         "breakdown": _build_section(df["_sub"], SO_ORDER, total),
+        "top_subcats": top_subcats,
     }
 
 # ---------------------------------------------------------------------------
@@ -465,6 +605,220 @@ def combine_final_output(kapture: dict, overall_sap: dict) -> dict:
     }
 
 # ---------------------------------------------------------------------------
+# KPI analysis
+# ---------------------------------------------------------------------------
+
+def analyze_kpi(kapture: dict, sap_tickets: dict, so_output: dict, final_output: dict) -> dict:
+    """
+    Assemble KPI output.
+    R+E sub-cats: Kapture re_top_subcats + SAP re_top_subcats + SO top_subcats (combined)
+    Complaints sub-cats: Kapture comp_top_subcats + SAP comp_top_subcats (combined)
+    Names are normalized to canonical form before merging counts.
+    """
+
+    def _merge_subcats(sources: list[dict]) -> dict:
+        """Normalize and merge {bucket: [{name,count,pct}]} from multiple sources."""
+        merged: dict[str, dict[str, int]] = {}
+        for source in sources:
+            for bucket, subs in source.items():
+                bucket_counts = merged.setdefault(bucket, {})
+                for item in subs:
+                    canonical = _normalize_subcat(item["name"])
+                    bucket_counts[canonical] = bucket_counts.get(canonical, 0) + item["count"]
+        return merged
+
+    def _to_top_subcats(merged: dict, top_n: int = 3) -> dict:
+        result = {}
+        for bucket, counts in merged.items():
+            bucket_total = sum(counts.values())
+            top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
+            result[bucket] = [
+                {"name": name, "count": cnt, "pct": _pct(cnt, bucket_total)}
+                for name, cnt in top
+            ]
+        return result
+
+    re_merged   = _merge_subcats([
+        kapture.get("re_top_subcats", {}),
+        sap_tickets.get("re_top_subcats", {}),
+        so_output.get("top_subcats", {}),
+    ])
+    comp_merged = _merge_subcats([
+        kapture.get("comp_top_subcats", {}),
+        sap_tickets.get("comp_top_subcats", {}),
+    ])
+
+    re_top_subcats   = _to_top_subcats(re_merged)
+    comp_top_subcats = _to_top_subcats(comp_merged)
+
+    def _top_categories(breakdown: dict, top_subcats: dict, top_n: int = 5) -> list:
+        entries = sorted(
+            [{"category": cat, "count": v["count"], "pct": v["pct"]}
+             for cat, v in breakdown.items()
+             if cat != "Others" and v["count"] > 0],
+            key=lambda x: x["count"],
+            reverse=True,
+        )[:top_n]
+        for e in entries:
+            e["top_sub_categories"] = top_subcats.get(e["category"], [])
+        return entries
+
+    return {
+        "re_total":        final_output["request_enquiry"]["total"],
+        "comp_total":      final_output["complaints"]["total"],
+        "re_categories":   _top_categories(final_output["request_enquiry"]["breakdown"], re_top_subcats),
+        "comp_categories": _top_categories(final_output["complaints"]["breakdown"], comp_top_subcats),
+        "rdin":            kapture.get("rdin", {"total": 0, "complaints": 0,
+                                                 "tat_total_minutes": None,
+                                                 "tat_avg_minutes": None,
+                                                 "tat_avg_hours": None}),
+    }
+
+
+# ---------------------------------------------------------------------------
+# RD.IN Complaints Ageing analysis
+# ---------------------------------------------------------------------------
+
+_AGEING_BUCKETS = [
+    {"label": "< 1 Day",    "min": 0,    "max": 1},
+    {"label": "1–2 Days",   "min": 1,    "max": 2},
+    {"label": "2–3 Days",   "min": 2,    "max": 3},
+    {"label": "3–5 Days",   "min": 3,    "max": 5},
+    {"label": "5–7 Days",   "min": 5,    "max": 7},
+    {"label": "7+ Days",    "min": 7,    "max": None},
+]
+
+
+def _assign_bucket(days: float | None) -> str | None:
+    if days is None:
+        return None
+    for b in _AGEING_BUCKETS:
+        if b["max"] is None:
+            if days >= b["min"]:
+                return b["label"]
+        elif b["min"] <= days < b["max"]:
+            return b["label"]
+    return _AGEING_BUCKETS[-1]["label"]
+
+
+def _breakdown_rows(df: pd.DataFrame, col: str, total_tickets: int, top_n: int = 20) -> list:
+    """Build per-group ageing breakdown for a given dimension column."""
+    groups = df[col].fillna("(blank)").astype(str).value_counts().head(top_n).index.tolist()
+    rows = []
+    for grp in groups:
+        mask = df[col].fillna("(blank)").astype(str) == grp
+        grp_df  = df[mask]
+        grp_tot = len(grp_df)
+        resolved = grp_df["_tat_days"].notna()
+        no_tat   = int((~resolved).sum())
+        resolved_days = grp_df.loc[resolved, "_tat_days"]
+        avg_resolved  = round(float(resolved_days.mean()), 2) if len(resolved_days) > 0 else None
+        avg_all       = round(float(grp_df["_tat_days0"].mean()), 2)
+
+        buckets_cnt = {}
+        for b in _AGEING_BUCKETS:
+            buckets_cnt[b["label"]] = int((grp_df["_bucket"] == b["label"]).sum())
+
+        rows.append({
+            "name":         grp,
+            "total":        grp_tot,
+            "pct_of_total": _pct(grp_tot, total_tickets),
+            "resolved":     int(resolved.sum()),
+            "no_tat":       no_tat,
+            "avg_tat_resolved": avg_resolved,
+            "avg_tat_all":  avg_all,
+            "buckets":      buckets_cnt,
+        })
+    return rows
+
+
+def analyze_rdin_ageing(df: pd.DataFrame) -> dict:
+    """
+    Filter Kapture sheet for RD.IN channel + Complaint vertical,
+    then compute ticket ageing by TAT bucket, broken down by
+    Category, Sub-category, and Queue Name.
+    """
+    channel_col  = _find_col(df, ["channel", "source channel", "source"])
+    vertical_col = _find_col(df, ["vertical"])
+    category_col = _find_col(df, ["category"])
+    subcat_col   = _find_col(df, ["sub category", "sub_category", "subcategory"])
+    queue_col    = _find_col(df, ["queue name", "queue"])
+    tat_col      = _find_col(df, ["tat", "tat (min)", "tat(min)", "resolution time"])
+
+    if not vertical_col or not tat_col:
+        return {"error": "Required columns (Vertical, TAT) not found in Kapture sheet."}
+
+    def _is_rdin(val: str) -> bool:
+        return "rdin" in re.sub(r"[\s.\-_]", "", val.lower())
+
+    # Filter RD.IN Complaints
+    rdin_mask = (df[channel_col].fillna("").astype(str).apply(_is_rdin)
+                 if channel_col else pd.Series([False] * len(df)))
+    comp_mask = df[vertical_col].fillna("").astype(str).str.strip().str.lower() == "complaint"
+    df = df[rdin_mask & comp_mask].copy()
+
+    total = len(df)
+    if total == 0:
+        return {"total": 0, "resolved": 0, "open_no_tat": 0,
+                "avg_tat_resolved": None, "avg_tat_all": 0,
+                "max_tat_days": None, "bucket_summary": [], "bucket_labels": [],
+                "by_category": [], "by_subcategory": [], "by_queue": []}
+
+    # Parse TAT → days
+    df["_tat_days"] = df[tat_col].astype(str).apply(
+        lambda v: round(_parse_tat_minutes(v) / 1440, 4) if _parse_tat_minutes(v) is not None else None
+    )
+    df["_tat_days0"] = df["_tat_days"].fillna(0.0)   # no-TAT treated as 0
+    df["_bucket"]    = df["_tat_days"].apply(_assign_bucket)
+
+    resolved_mask = df["_tat_days"].notna()
+    resolved      = int(resolved_mask.sum())
+    open_no_tat   = total - resolved
+
+    resolved_days = df.loc[resolved_mask, "_tat_days"]
+    avg_resolved  = round(float(resolved_days.mean()), 2)  if resolved > 0  else None
+    avg_all       = round(float(df["_tat_days0"].mean()), 2)
+    max_days      = round(float(resolved_days.max()), 2)    if resolved > 0  else None
+
+    # Bucket summary
+    bucket_summary = []
+    for b in _AGEING_BUCKETS:
+        cnt = int((df["_bucket"] == b["label"]).sum())
+        bucket_summary.append({
+            "label":      b["label"],
+            "count":      cnt,
+            "pct_of_resolved": _pct(cnt, resolved),
+            "pct_of_total":    _pct(cnt, total),
+        })
+    # Add No-TAT row
+    bucket_summary.append({
+        "label":      "No TAT (Open)",
+        "count":      open_no_tat,
+        "pct_of_resolved": 0.0,
+        "pct_of_total":    _pct(open_no_tat, total),
+    })
+
+    # Dimension breakdowns
+    by_category   = _breakdown_rows(df, category_col, total, top_n=20) if category_col else []
+    by_subcategory= _breakdown_rows(df, subcat_col,   total, top_n=20) if subcat_col   else []
+    by_queue      = _breakdown_rows(df, queue_col,    total, top_n=20) if queue_col    else []
+
+    return {
+        "total":            total,
+        "resolved":         resolved,
+        "open_no_tat":      open_no_tat,
+        "avg_tat_resolved": avg_resolved,
+        "avg_tat_all":      avg_all,
+        "max_tat_days":     max_days,
+        "bucket_labels":    [b["label"] for b in _AGEING_BUCKETS],
+        "bucket_summary":   bucket_summary,
+        "by_category":      by_category,
+        "by_subcategory":   by_subcategory,
+        "by_queue":         by_queue,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -509,12 +863,14 @@ def analyze_file(file_obj: io.BytesIO) -> dict:
     so_df  = xl.parse(so_sheet)
     oe_df  = xl.parse(oe_sheet)
 
-    kapture       = analyze_kapture(kap_df)
-    sap_tickets   = analyze_sap_tickets(sap_df)
-    so_output     = analyze_so_order(so_df)
-    other_enquiry = analyze_other_enquiry(oe_df)
-    overall_sap   = combine_overall_sap(sap_tickets, so_output, other_enquiry)
-    final_output  = combine_final_output(kapture, overall_sap)
+    kapture         = analyze_kapture(kap_df)
+    sap_tickets     = analyze_sap_tickets(sap_df)
+    so_output       = analyze_so_order(so_df)
+    other_enquiry   = analyze_other_enquiry(oe_df)
+    overall_sap     = combine_overall_sap(sap_tickets, so_output, other_enquiry)
+    final_output    = combine_final_output(kapture, overall_sap)
+    kpi             = analyze_kpi(kapture, sap_tickets, so_output, final_output)
+    rdin_ageing     = analyze_rdin_ageing(kap_df)
 
     return {
         "kapture":       kapture,
@@ -523,6 +879,8 @@ def analyze_file(file_obj: io.BytesIO) -> dict:
         "other_enquiry": other_enquiry,
         "overall_sap":   overall_sap,
         "final_output":  final_output,
+        "kpi":           kpi,
+        "rdin_ageing":   rdin_ageing,
         "meta": {
             "sheets": {
                 "kapture": kap_sheet,
