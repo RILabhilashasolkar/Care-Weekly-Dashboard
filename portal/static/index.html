@@ -114,6 +114,7 @@
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(4)">Overall SAP</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(5)">KPI Calculations</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(6)">RD.IN Ageing</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(7)">WoW Trends</button>
       </div>
       <div id="tab-content" class="p-6"></div>
     </div>
@@ -294,6 +295,18 @@ function switchTab(idx) {
   tabs.forEach((t, i) => {
     t.classList.toggle("tab-active", i === idx);
   });
+  _destroyCharts();
+
+  if (idx === 7) {
+    document.getElementById("tab-content").innerHTML = `
+      <div class="flex flex-col items-center justify-center py-16 gap-3">
+        <div class="spinner mx-auto"></div>
+        <p class="text-gray-500 text-sm">Loading week-on-week trends…</p>
+      </div>`;
+    fetchAndRenderTrends();
+    return;
+  }
+
   if (!currentResults) return;
   const r = currentResults;
   const renders = [
@@ -305,7 +318,6 @@ function switchTab(idx) {
     () => renderKPI(r.kpi, r.final_output, r.overall_sap),
     () => renderRdinAgeing(r.rdin_ageing),
   ];
-  _destroyCharts();
   document.getElementById("tab-content").innerHTML = renders[idx]();
   _initTabCharts(idx, r);
 }
@@ -1124,6 +1136,261 @@ function _fcRdinAgeing(d) {
          return t<1?_C.green+'cc':t<2?_C.blue+'cc':t<3?_C.amber+'cc':t<5?_C.orange+'cc':_C.red+'cc';
        }), borderRadius:4 }]
   ));
+}
+
+// -----------------------------------------------------------------------
+// WoW Trends
+// -----------------------------------------------------------------------
+async function fetchAndRenderTrends() {
+  try {
+    const resp = await fetch(API_BASE + "/api/trends");
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const trends = await resp.json();
+    _destroyCharts();
+    document.getElementById("tab-content").innerHTML = buildWoWHtml(trends);
+    _fcWoWTrends(trends);
+  } catch(e) {
+    document.getElementById("tab-content").innerHTML =
+      `<p class="text-red-500 text-sm p-6">Failed to load trends: ${e.message}</p>`;
+  }
+}
+
+function buildWoWHtml(trends) {
+  if (!trends.length) return `<p class="text-gray-400 text-center py-16">No historical data available yet. Upload multiple weeks to see trends.</p>`;
+
+  const cur  = trends[trends.length - 1];
+  const prev = trends.length > 1 ? trends[trends.length - 2] : null;
+
+  function delta(a, b, pct) {
+    if (b == null || b === 0) return '';
+    const d = a - b;
+    const sign = d >= 0 ? '+' : '';
+    if (pct) return `${sign}${d.toFixed(1)} pp`;
+    return `${sign}${d.toLocaleString('en-IN')}`;
+  }
+  function arrow(a, b, invertColor) {
+    if (b == null) return '';
+    const d = a - b;
+    const up = d > 0;
+    const good = invertColor ? !up : up;
+    const col = good ? 'text-green-600' : 'text-red-500';
+    const sym = up ? '▲' : '▼';
+    return `<span class="${col} text-xs font-bold">${sym}</span>`;
+  }
+
+  const kpiCards = [
+    { label: 'Total Tickets', val: cur.total, prev: prev?.total, fmt: v => v.toLocaleString('en-IN'), inv: false },
+    { label: 'Complaints',    val: cur.complaints, prev: prev?.complaints, fmt: v => v.toLocaleString('en-IN'), inv: true },
+    { label: 'Complaint Rate',val: cur.complaint_rate, prev: prev?.complaint_rate, fmt: v => v.toFixed(1)+'%', inv: true, pct: true },
+    { label: 'R+E Tickets',   val: cur.request_enquiry, prev: prev?.request_enquiry, fmt: v => v.toLocaleString('en-IN'), inv: false },
+    { label: 'R+E Rate',      val: cur.re_rate, prev: prev?.re_rate, fmt: v => v.toFixed(1)+'%', inv: false, pct: true },
+    { label: 'RD.IN Tickets', val: cur.rdin_total, prev: prev?.rdin_total, fmt: v => v.toLocaleString('en-IN'), inv: true },
+  ].map(k => {
+    const d = prev ? delta(k.val, k.prev, k.pct) : '';
+    const a = prev ? arrow(k.val, k.prev, k.inv) : '';
+    const bg = !prev ? 'bg-gray-50' : (k.inv ? (k.val < k.prev ? 'bg-green-50' : 'bg-red-50') : (k.val >= k.prev ? 'bg-green-50' : 'bg-red-50'));
+    return `<div class="rounded-xl border p-4 ${bg}">
+      <p class="text-xs text-gray-500 font-medium mb-1">${k.label}</p>
+      <p class="text-2xl font-bold text-gray-800">${k.fmt(k.val)}</p>
+      ${prev ? `<p class="text-xs text-gray-500 mt-1">vs ${k.fmt(k.prev)} ${a} ${d}</p>` : ''}
+    </div>`;
+  }).join('');
+
+  const cats = ["Repair","Demo & Installation","PMS","Delivery related","Refund","Return","Invoice/Billing related","Warranty"];
+
+  // Summary table
+  const tableRows = trends.map((t, i) => {
+    const p = i > 0 ? trends[i-1] : null;
+    const dTot  = p ? t.total - p.total : null;
+    const dComp = p ? t.complaint_rate - p.complaint_rate : null;
+    const dRe   = p ? t.re_rate - p.re_rate : null;
+
+    function chg(d, inv, pct) {
+      if (d == null) return '<td class="py-2 px-3 text-gray-400 text-center">—</td>';
+      const good = inv ? d < 0 : d >= 0;
+      const col  = good ? 'text-green-600' : 'text-red-500';
+      const sym  = d > 0 ? '▲' : '▼';
+      const val  = pct ? Math.abs(d).toFixed(1)+' pp' : Math.abs(d).toLocaleString('en-IN');
+      return `<td class="py-2 px-3 text-center ${col} text-xs font-semibold">${sym} ${val}</td>`;
+    }
+
+    return `<tr class="border-b last:border-0 ${i===trends.length-1?'bg-blue-50 font-semibold':'hover:bg-gray-50'}">
+      <td class="py-2 px-3 text-sm">${t.week_label}</td>
+      <td class="py-2 px-3 text-right text-sm">${t.total.toLocaleString('en-IN')}</td>
+      ${chg(dTot, false, false)}
+      <td class="py-2 px-3 text-right text-sm">${t.complaints.toLocaleString('en-IN')}</td>
+      <td class="py-2 px-3 text-right text-sm">${t.complaint_rate.toFixed(1)}%</td>
+      ${chg(dComp, true, true)}
+      <td class="py-2 px-3 text-right text-sm">${t.request_enquiry.toLocaleString('en-IN')}</td>
+      <td class="py-2 px-3 text-right text-sm">${t.re_rate.toFixed(1)}%</td>
+      ${chg(dRe, false, true)}
+      <td class="py-2 px-3 text-right text-sm">${t.rdin_total ? t.rdin_total.toLocaleString('en-IN') : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <div class="space-y-6">
+    <!-- Current week header -->
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold text-gray-800">Week-on-Week Trends</h2>
+      <span class="text-sm text-gray-500">Latest: <strong>${cur.week_label}</strong> &nbsp;|&nbsp; ${trends.length} week${trends.length>1?'s':''} of data</span>
+    </div>
+
+    <!-- KPI change cards -->
+    <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      ${kpiCards}
+    </div>
+
+    <!-- Charts row 1: Volume + Complaint Rate -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-white rounded-xl border p-4 shadow-sm">
+        <p class="text-sm font-semibold text-gray-700 mb-3">Ticket Volume Trend</p>
+        <canvas id="wow-vol" height="200"></canvas>
+      </div>
+      <div class="bg-white rounded-xl border p-4 shadow-sm">
+        <p class="text-sm font-semibold text-gray-700 mb-3">Complaint &amp; R+E Rate Trend</p>
+        <canvas id="wow-rate" height="200"></canvas>
+      </div>
+    </div>
+
+    <!-- Charts row 2: Category breakdown trends -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div class="bg-white rounded-xl border p-4 shadow-sm">
+        <p class="text-sm font-semibold text-gray-700 mb-3">Complaint Categories – Week Trend</p>
+        <canvas id="wow-comp-cat" height="220"></canvas>
+      </div>
+      <div class="bg-white rounded-xl border p-4 shadow-sm">
+        <p class="text-sm font-semibold text-gray-700 mb-3">R+E Categories – Week Trend</p>
+        <canvas id="wow-re-cat" height="220"></canvas>
+      </div>
+    </div>
+
+    <!-- Chart row 3: RD.IN trend -->
+    <div class="bg-white rounded-xl border p-4 shadow-sm">
+      <p class="text-sm font-semibold text-gray-700 mb-3">RD.IN Tickets Trend</p>
+      <canvas id="wow-rdin" height="130"></canvas>
+    </div>
+
+    <!-- Summary table -->
+    <div class="bg-white rounded-xl border shadow-sm overflow-x-auto">
+      <p class="text-sm font-semibold text-gray-700 px-4 pt-4 pb-2">Week-on-Week Summary</p>
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="text-left text-xs text-gray-500 bg-gray-50 border-b">
+            <th class="py-2 px-3 font-medium">Week</th>
+            <th class="py-2 px-3 text-right font-medium">Total</th>
+            <th class="py-2 px-3 text-center font-medium">Δ Vol</th>
+            <th class="py-2 px-3 text-right font-medium">Complaints</th>
+            <th class="py-2 px-3 text-right font-medium">Comp%</th>
+            <th class="py-2 px-3 text-center font-medium">Δ Comp%</th>
+            <th class="py-2 px-3 text-right font-medium">R+E</th>
+            <th class="py-2 px-3 text-right font-medium">R+E%</th>
+            <th class="py-2 px-3 text-center font-medium">Δ R+E%</th>
+            <th class="py-2 px-3 text-right font-medium">RD.IN</th>
+          </tr>
+        </thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+function _fcWoWTrends(trends) {
+  if (!trends.length) return;
+  const labels = trends.map(t => t.week_label.replace(/^Week of /, '').replace(/^Week /, 'Wk '));
+  const cats = ["Repair","Demo & Installation","PMS","Delivery related","Refund","Return","Invoice/Billing related","Warranty"];
+  const catColors = [_C.blue, _C.red, _C.green, _C.amber, _C.orange, '#8b5cf6', '#06b6d4', '#84cc16'];
+
+  // 1. Volume bar chart
+  _mkChart('wow-vol', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'Total Tickets', data: trends.map(t=>t.total), backgroundColor: _C.blue+'88', borderRadius:4, yAxisID:'y' },
+        { label:'Complaints',    data: trends.map(t=>t.complaints), backgroundColor: _C.red+'88', borderRadius:4, yAxisID:'y' },
+        { label:'R+E',           data: trends.map(t=>t.request_enquiry), backgroundColor: _C.green+'88', borderRadius:4, yAxisID:'y' },
+      ]
+    },
+    options: { responsive:true, maintainAspectRatio:true,
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } },
+      scales:{ y:{ beginAtZero:true, ticks:{ callback: v => v>=1000?(v/1000).toFixed(0)+'k':v } } }
+    }
+  });
+
+  // 2. Rate line chart
+  _mkChart('wow-rate', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        { label:'Complaint Rate %', data: trends.map(t=>t.complaint_rate), borderColor:_C.red, backgroundColor:_C.red+'22', fill:true, tension:0.3, pointRadius:4 },
+        { label:'R+E Rate %',       data: trends.map(t=>t.re_rate),        borderColor:_C.blue, backgroundColor:_C.blue+'22', fill:true, tension:0.3, pointRadius:4 },
+      ]
+    },
+    options: { responsive:true, maintainAspectRatio:true,
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } },
+      scales:{ y:{ beginAtZero:true, ticks:{ callback: v => v.toFixed(1)+'%' } } }
+    }
+  });
+
+  // 3. Complaint category trend (top 5 by latest week)
+  const topCompCats = cats.slice().sort((a,b) =>
+    (trends[trends.length-1].comp_breakdown[b]||0) - (trends[trends.length-1].comp_breakdown[a]||0)
+  ).slice(0,5);
+  _mkChart('wow-comp-cat', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: topCompCats.map((c,i) => ({
+        label: c,
+        data: trends.map(t => t.comp_breakdown[c]||0),
+        borderColor: catColors[i], backgroundColor: catColors[i]+'33',
+        fill: false, tension: 0.3, pointRadius: 3,
+      }))
+    },
+    options: { responsive:true, maintainAspectRatio:true,
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:10} } } },
+      scales:{ y:{ beginAtZero:true } }
+    }
+  });
+
+  // 4. R+E category trend (top 5)
+  const topReCats = cats.slice().sort((a,b) =>
+    (trends[trends.length-1].re_breakdown[b]||0) - (trends[trends.length-1].re_breakdown[a]||0)
+  ).slice(0,5);
+  _mkChart('wow-re-cat', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: topReCats.map((c,i) => ({
+        label: c,
+        data: trends.map(t => t.re_breakdown[c]||0),
+        borderColor: catColors[i], backgroundColor: catColors[i]+'33',
+        fill: false, tension: 0.3, pointRadius: 3,
+      }))
+    },
+    options: { responsive:true, maintainAspectRatio:true,
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:10} } } },
+      scales:{ y:{ beginAtZero:true } }
+    }
+  });
+
+  // 5. RD.IN trend
+  const rdinData = trends.map(t => t.rdin_total || 0);
+  _mkChart('wow-rdin', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label:'RD.IN Tickets', data: rdinData, backgroundColor:_C.amber+'99', borderRadius:4, yAxisID:'y' },
+      ]
+    },
+    options: { responsive:true, maintainAspectRatio:true,
+      plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } },
+      scales:{ y:{ beginAtZero:true } }
+    }
+  });
 }
 
 // -----------------------------------------------------------------------

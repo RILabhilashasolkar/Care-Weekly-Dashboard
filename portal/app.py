@@ -111,6 +111,57 @@ def api_list_reports():
     return [dict(r) for r in rows]
 
 
+@app.get("/api/trends")
+def api_get_trends():
+    with _db() as conn:
+        rows = conn.execute(
+            "SELECT id, week_label, created_at, results FROM reports "
+            "WHERE week_label NOT IN ('Test', 'test1') "
+            "ORDER BY created_at ASC"
+        ).fetchall()
+    seen: dict = {}
+    for r in rows:
+        seen[r["week_label"]] = dict(r)
+    result = []
+    for wl, r in seen.items():
+        try:
+            res = json.loads(r["results"])
+            fo  = res.get("final_output", {})
+            kap = res.get("kapture", {})
+            sap = res.get("sap_tickets", {})
+            rdin = res.get("rdin_ageing", {}) or {}
+            total = fo.get("total", 0)
+            if total == 0 or total > 500_000:
+                continue
+            comp = fo.get("complaints", {}).get("total", 0)
+            re   = fo.get("request_enquiry", {}).get("total", 0)
+            comp_bd = fo.get("complaints", {}).get("breakdown", {})
+            re_bd   = fo.get("request_enquiry", {}).get("breakdown", {})
+            cats = ["Repair", "Demo & Installation", "PMS",
+                    "Delivery related", "Refund", "Return",
+                    "Invoice/Billing related", "Warranty"]
+            result.append({
+                "week_label":      wl,
+                "created_at":      r["created_at"],
+                "report_id":       r["id"],
+                "total":           total,
+                "complaints":      comp,
+                "request_enquiry": re,
+                "complaint_rate":  round(comp / total * 100, 2) if total else 0,
+                "re_rate":         round(re / total * 100, 2) if total else 0,
+                "kapture_total":   kap.get("total", 0),
+                "sap_total":       sap.get("total", 0),
+                "comp_breakdown":  {b: comp_bd.get(b, {}).get("count", 0) for b in cats},
+                "re_breakdown":    {b: re_bd.get(b, {}).get("count", 0) for b in cats},
+                "rdin_total":      rdin.get("total", 0),
+                "rdin_avg_tat":    rdin.get("avg_tat_resolved"),
+                "rdin_open":       rdin.get("open_no_tat", 0),
+            })
+        except Exception:
+            pass
+    return sorted(result, key=lambda x: x["created_at"])
+
+
 @app.get("/api/reports/{report_id}")
 def api_get_report(report_id: str):
     with _db() as conn:
