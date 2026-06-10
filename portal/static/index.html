@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <title>Care Weekly Dashboard Portal</title>
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4f8; }
   .tab-active { border-bottom: 3px solid #1d4ed8; color: #1d4ed8; font-weight: 600; }
@@ -24,6 +25,11 @@
   .spinner { border: 3px solid #e2e8f0; border-top-color: #2563eb; border-radius: 50%; width: 28px; height: 28px; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .hist-row:hover { background: #f0f7ff; cursor: pointer; }
+  .chart-box { background: white; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.07); padding: 16px; }
+  .insight-info  { border-left: 4px solid #0284c7; background: #f0f9ff; color: #075985; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 13px; }
+  .insight-warn  { border-left: 4px solid #d97706; background: #fffbeb; color: #92400e; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 13px; }
+  .insight-alert { border-left: 4px solid #dc2626; background: #fef2f2; color: #991b1b; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 13px; }
+  .insight-ok    { border-left: 4px solid #16a34a; background: #f0fdf4; color: #14532d; padding: 8px 14px; border-radius: 0 8px 8px 0; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -299,7 +305,9 @@ function switchTab(idx) {
     () => renderKPI(r.kpi, r.final_output, r.overall_sap),
     () => renderRdinAgeing(r.rdin_ageing),
   ];
+  _destroyCharts();
   document.getElementById("tab-content").innerHTML = renders[idx]();
+  _initTabCharts(idx, r);
 }
 
 // -----------------------------------------------------------------------
@@ -361,8 +369,33 @@ function renderFinalOutput(d) {
   rows.push(spacerRow());
   rows.push(headerRow("Request + Enquiry", d.request_enquiry.total));
   rows.push(...buildBreakdownRows(d.request_enquiry.breakdown, SUB_BUCKETS));
+
+  const compPct = d.total > 0 ? (d.complaints.total / d.total * 100).toFixed(1) : 0;
+  const topCompB = SUB_BUCKETS.filter(b => b !== 'Others')
+    .map(b => ({ name: b, count: d.complaints.breakdown[b]?.count || 0 }))
+    .sort((a,b) => b.count - a.count)[0];
+  const topReB = SUB_BUCKETS.filter(b => b !== 'Others')
+    .map(b => ({ name: b, count: d.request_enquiry.breakdown[b]?.count || 0 }))
+    .sort((a,b) => b.count - a.count)[0];
+  const ins = [];
+  if (compPct > 25) ins.push(`<div class="insight-warn">⚠️ Complaints are <strong>${compPct}%</strong> of total tickets — above 25% threshold. Review top complaint drivers.</div>`);
+  else ins.push(`<div class="insight-ok">✅ Complaint rate at <strong>${compPct}%</strong> of total — within acceptable range.</div>`);
+  if (topCompB) ins.push(`<div class="insight-alert">🔴 Top Complaint sub-category: <strong>${topCompB.name}</strong> — ${Number(topCompB.count).toLocaleString('en-IN')} tickets</div>`);
+  if (topReB) ins.push(`<div class="insight-info">📋 Top R+E sub-category: <strong>${topReB.name}</strong> — ${Number(topReB.count).toLocaleString('en-IN')} tickets</div>`);
+
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">Final Output — Kapture + SAP Combined</h3>
+    <div class="grid grid-cols-1 gap-2 mb-4">${ins.join('')}</div>
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">Volume Split</p>
+        <div style="height:200px"><canvas id="chart-fo-split"></canvas></div>
+      </div>
+      <div class="chart-box col-span-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Complaints vs R+E by Sub-Category</p>
+        <div style="height:200px"><canvas id="chart-fo-buckets"></canvas></div>
+      </div>
+    </div>
     ${dashTable(["Category", "Count", "% of Group"], rows)}`;
 }
 
@@ -418,6 +451,16 @@ function renderKapture(d) {
 
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">Kapture Ticket Analysis</h3>
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">Volume Split</p>
+        <div style="height:200px"><canvas id="chart-kap-split"></canvas></div>
+      </div>
+      <div class="chart-box col-span-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sub-Category Breakdown</p>
+        <div style="height:200px"><canvas id="chart-kap-buckets"></canvas></div>
+      </div>
+    </div>
     ${dashTable(["Category", "Count", "% of Group"], rows)}
     ${rdInHtml}`;
 }
@@ -434,13 +477,19 @@ function renderSapTickets(d) {
 
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">SAP Ticket Analysis</h3>
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">Volume Split</p>
+        <div style="height:200px"><canvas id="chart-sap-split"></canvas></div>
+      </div>
+      <div class="chart-box col-span-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sub-Category Breakdown</p>
+        <div style="height:200px"><canvas id="chart-sap-buckets"></canvas></div>
+      </div>
+    </div>
     <div class="grid grid-cols-2 gap-6">
-      <div>
-        ${dashTable(["Category", "Count", "% of Complaints"], compRows)}
-      </div>
-      <div>
-        ${dashTable(["Category", "Count", "% of Request + Enquiry"], refRows)}
-      </div>
+      <div>${dashTable(["Category", "Count", "% of Complaints"], compRows)}</div>
+      <div>${dashTable(["Category", "Count", "% of Request + Enquiry"], refRows)}</div>
     </div>`;
 }
 
@@ -451,8 +500,12 @@ function renderSoOutput(d) {
   rows.push(...buildBreakdownRows(d.breakdown, SO_ORDER));
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">SO Output — Request + Enquiry Context Analysis</h3>
-    <div class="max-w-lg">
-      ${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], rows)}
+    <div class="grid grid-cols-2 gap-6 mb-6">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">SO Volume by Type</p>
+        <div style="height:260px"><canvas id="chart-so-bars"></canvas></div>
+      </div>
+      <div>${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], rows)}</div>
     </div>`;
 }
 
@@ -474,13 +527,19 @@ function renderOverallSap(d) {
   return `
     <h3 class="text-base font-semibold text-gray-800 mb-3">Overall SAP Analysis</h3>
     <p class="text-sm text-gray-500 mb-4">Total SAP = SAP Tickets + SO Order + Other Enquiry &nbsp;|&nbsp; <strong>${fmt(d.total)}</strong> total tickets</p>
+    <div class="grid grid-cols-3 gap-4 mb-6">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 text-center">Volume Split</p>
+        <div style="height:200px"><canvas id="chart-osap-split"></canvas></div>
+      </div>
+      <div class="chart-box col-span-2">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Sub-Category Breakdown</p>
+        <div style="height:200px"><canvas id="chart-osap-buckets"></canvas></div>
+      </div>
+    </div>
     <div class="grid grid-cols-2 gap-6">
-      <div>
-        ${dashTable(["Category", "Count", "% of Complaints"], compRows)}
-      </div>
-      <div>
-        ${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], reqRows)}
-      </div>
+      <div>${dashTable(["Category", "Count", "% of Complaints"], compRows)}</div>
+      <div>${dashTable(["Ticket Context", "Count", "% of Request + Enquiry"], reqRows)}</div>
     </div>`;
 }
 
@@ -555,10 +614,21 @@ function renderKPI(kpi, finalOutput, overallSap) {
       '</table></div>';
   }
 
+  const topRecat = reCategories.length ? [...reCategories].sort((a,b) => b.count - a.count)[0] : null;
+  const topCompcat = compCategories.length ? [...compCategories].sort((a,b) => b.count - a.count)[0] : null;
+  const kpiIns = [];
+  if (topRecat) kpiIns.push(`<div class="insight-info">📋 Top R+E category: <strong>${topRecat.category}</strong> — ${Number(topRecat.count).toLocaleString('en-IN')} tickets (${fmtPct(topRecat.pct)})</div>`);
+  if (topCompcat) kpiIns.push(`<div class="insight-alert">🔴 Top Complaint category: <strong>${topCompcat.category}</strong> — ${Number(topCompcat.count).toLocaleString('en-IN')} tickets (${fmtPct(topCompcat.pct)})</div>`);
+
   var catSection =
     '<div class="mb-8">' +
     '<h3 class="text-base font-semibold text-gray-800 mb-1">1. Category Analysis — All Sources (Kapture + SAP + SO)</h3>' +
     (!hasSubs ? '<p class="text-xs text-amber-600 mb-3 bg-amber-50 border border-amber-200 rounded px-3 py-2">Re-upload the file to add sub-category contributor details.</p>' : '') +
+    (kpiIns.length ? '<div class="grid grid-cols-1 gap-2 mb-4">' + kpiIns.join('') + '</div>' : '') +
+    '<div class="grid grid-cols-2 gap-4 mb-4">' +
+      '<div class="chart-box"><p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Inquiry &amp; Request — Top Categories</p><div style="height:200px"><canvas id="chart-kpi-re"></canvas></div></div>' +
+      '<div class="chart-box"><p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Complaints — Top Categories</p><div style="height:200px"><canvas id="chart-kpi-comp"></canvas></div></div>' +
+    '</div>' +
     '<div class="grid grid-cols-2 gap-6">' +
       categoryTable('Inquiry &amp; Request — Top 5 Categories', reCategories, reTotal, hasSubs, 'Inquiry &amp; Request') +
       categoryTable('Complaints — Top 5 Categories', compCategories, compTotal, hasSubs, 'Complaints') +
@@ -809,17 +879,251 @@ function renderRdinAgeing(d) {
     </div>`;
   }
 
+  const pctOpen = d.total > 0 ? (d.open_no_tat / d.total * 100).toFixed(1) : 0;
+  const pctFast = d.resolved > 0 ? ((d.bucket_summary[0]?.count || 0) / d.resolved * 100).toFixed(1) : 0;
+  const highBacklogCat = (d.by_category || []).slice().sort((a,b) => b.no_tat - a.no_tat)[0];
+  const highTatCat = (d.by_category || []).filter(c => c.resolved > 0).sort((a,b) => (b.avg_tat_resolved||0) - (a.avg_tat_resolved||0))[0];
+  const rdIns = [];
+  if (pctOpen > 40) rdIns.push(`<div class="insight-alert">🔴 <strong>${pctOpen}%</strong> of RD.IN complaint tickets are unresolved (No TAT) — significant backlog requiring escalation.</div>`);
+  else rdIns.push(`<div class="insight-ok">✅ Open ticket rate: <strong>${pctOpen}%</strong> of total.</div>`);
+  if (pctFast > 50) rdIns.push(`<div class="insight-ok">✅ <strong>${pctFast}%</strong> of resolved tickets closed within 1 day — strong same-day resolution rate.</div>`);
+  else rdIns.push(`<div class="insight-warn">⚠️ Only <strong>${pctFast}%</strong> of resolved tickets closed within 1 day — resolution speed needs improvement.</div>`);
+  if (highBacklogCat && highBacklogCat.no_tat > 0) rdIns.push(`<div class="insight-warn">⚠️ Highest backlog: <strong>${highBacklogCat.name}</strong> with ${highBacklogCat.no_tat.toLocaleString('en-IN')} unresolved tickets.</div>`);
+  if (highTatCat) rdIns.push(`<div class="insight-info">⏱️ Slowest resolution: <strong>${highTatCat.name}</strong> avg ${highTatCat.avg_tat_resolved?.toFixed(2)} days (resolved only).</div>`);
+
   return `
     <div class="mb-4">
       <h2 class="text-xl font-bold text-gray-800">RD.IN Complaints — Ticket Ageing Dashboard</h2>
       <p class="text-xs text-gray-500 mt-1">Ageing measured by TAT (resolution time). No TAT = open / unresolved. Avg TAT (All) counts open tickets as 0.</p>
     </div>
+    <div class="grid grid-cols-1 gap-2 mb-5">${rdIns.join('')}</div>
     ${kpiSection}
     ${bucketSection}
+    <div class="grid grid-cols-3 gap-4 mb-8">
+      <div class="chart-box col-span-3">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Ageing Distribution — Resolved Tickets by Time Bucket</p>
+        <div style="height:240px"><canvas id="chart-age-dist"></canvas></div>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-4 mb-8">
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Category Breakdown — Resolved vs Open (Backlog)</p>
+        <div style="height:320px"><canvas id="chart-age-cat"></canvas></div>
+      </div>
+      <div class="chart-box">
+        <p class="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Avg TAT by Category (days) — color: green &lt;1d, amber 1-2d, orange 2-5d, red 5d+</p>
+        <div style="height:320px"><canvas id="chart-age-avgt"></canvas></div>
+      </div>
+    </div>
     ${ageingMatrix('Ageing by Category', d.by_category)}
     ${ageingMatrix('Ageing by Sub-Category', d.by_subcategory)}
     ${ageingMatrix('Ageing by Queue Name', d.by_queue)}
   `;
+}
+
+// -----------------------------------------------------------------------
+// Chart infrastructure
+// -----------------------------------------------------------------------
+const _chartReg = {};
+
+function _destroyCharts() {
+  Object.values(_chartReg).forEach(c => { try { c.destroy(); } catch(e) {} });
+  for (const k in _chartReg) delete _chartReg[k];
+}
+
+function _mkChart(id, cfg) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  try { _chartReg[id] = new Chart(el, cfg); } catch(e) {}
+}
+
+const _C = { red:'#ef4444', blue:'#3b82f6', green:'#10b981', amber:'#f59e0b',
+             orange:'#f97316', gray:'#9ca3af', dkred:'#7f1d1d', indigo:'#6366f1',
+             purple:'#8b5cf6', teal:'#14b8a6' };
+
+const _BKTCOL = {
+  '< 1 Day': _C.green, '1–2 Days': _C.blue, '2–3 Days': _C.amber,
+  '3–5 Days': _C.orange, '5–7 Days': _C.red, '7+ Days': _C.dkred, 'No TAT (Open)': _C.gray
+};
+
+const _PALETTE = [_C.blue,_C.red,_C.green,_C.amber,_C.purple,_C.teal,_C.orange,_C.indigo,'#ec4899','#84cc16'];
+
+const _BASE_OPTS = {
+  responsive: true, maintainAspectRatio: false,
+  plugins: { legend: { labels: { font: { size: 11, family: "'Segoe UI',Arial,sans-serif" }, padding: 10 } } }
+};
+
+function _donut(labels, data, colors) {
+  return { type:'doughnut',
+    data:{ labels, datasets:[{ data, backgroundColor: colors, borderWidth:2, borderColor:'#fff' }] },
+    options:{ ..._BASE_OPTS,
+      plugins:{ ..._BASE_OPTS.plugins,
+        tooltip:{ callbacks:{ label: ctx => {
+          const tot = ctx.dataset.data.reduce((a,b)=>a+b,0);
+          return ` ${ctx.label}: ${Number(ctx.raw).toLocaleString('en-IN')} (${(ctx.raw/tot*100).toFixed(1)}%)`;
+        }}}
+      }
+    }
+  };
+}
+
+function _hbar(labels, datasets, stacked) {
+  return { type:'bar',
+    data:{ labels, datasets },
+    options:{ ..._BASE_OPTS, indexAxis:'y',
+      plugins:{ ..._BASE_OPTS.plugins,
+        legend:{ display: datasets.length > 1, labels:{ font:{size:11} } },
+        tooltip:{ callbacks:{ label: ctx => ` ${ctx.dataset.label||''}: ${Number(ctx.raw).toLocaleString('en-IN')}` } }
+      },
+      scales:{
+        x:{ stacked:!!stacked, ticks:{font:{size:10}} },
+        y:{ stacked:!!stacked, ticks:{font:{size:10}} }
+      }
+    }
+  };
+}
+
+function _bar(labels, datasets) {
+  return { type:'bar',
+    data:{ labels, datasets },
+    options:{ ..._BASE_OPTS,
+      plugins:{ ..._BASE_OPTS.plugins, legend:{ display: datasets.length > 1, labels:{font:{size:11}} } },
+      scales:{ x:{ticks:{font:{size:10}}}, y:{beginAtZero:true, ticks:{font:{size:10}}} }
+    }
+  };
+}
+
+function _initTabCharts(idx, r) {
+  try {
+    const fns = [
+      () => _fcFinalOutput(r.final_output),
+      () => _fcKapture(r.kapture),
+      () => _fcSapTickets(r.sap_tickets),
+      () => _fcSoOutput(r.so_output),
+      () => _fcOverallSap(r.overall_sap),
+      () => _fcKPI(r.kpi, r.final_output),
+      () => _fcRdinAgeing(r.rdin_ageing),
+    ];
+    if (fns[idx]) fns[idx]();
+  } catch(e) {}
+}
+
+function _fcFinalOutput(d) {
+  if (!d) return;
+  _mkChart('chart-fo-split', _donut(
+    ['Complaints','Request + Enquiry'],
+    [d.complaints.total, d.request_enquiry.total],
+    [_C.red+'cc', _C.blue+'cc']
+  ));
+  const bkts = SUB_BUCKETS.filter(b => b !== 'Others');
+  _mkChart('chart-fo-buckets', _hbar(bkts, [
+    { label:'Complaints', data: bkts.map(b => d.complaints.breakdown[b]?.count||0), backgroundColor:_C.red+'99', borderRadius:4 },
+    { label:'R+E',        data: bkts.map(b => d.request_enquiry.breakdown[b]?.count||0), backgroundColor:_C.blue+'99', borderRadius:4 },
+  ]));
+}
+
+function _fcKapture(d) {
+  if (!d) return;
+  _mkChart('chart-kap-split', _donut(
+    ['Complaints','Request + Enquiry'],
+    [d.complaints.total, d.request_enquiry.total],
+    [_C.red+'cc', _C.blue+'cc']
+  ));
+  const bkts = SUB_BUCKETS.filter(b => b !== 'Others');
+  _mkChart('chart-kap-buckets', _hbar(bkts, [
+    { label:'Complaints', data: bkts.map(b => d.complaints.breakdown[b]?.count||0), backgroundColor:_C.red+'99', borderRadius:4 },
+    { label:'R+E',        data: bkts.map(b => d.request_enquiry.breakdown[b]?.count||0), backgroundColor:_C.blue+'99', borderRadius:4 },
+  ]));
+}
+
+function _fcSapTickets(d) {
+  if (!d) return;
+  _mkChart('chart-sap-split', _donut(
+    ['Complaints','R+E+Feedback'],
+    [d.complaints.total, d.request_enquiry_feedback.total],
+    [_C.red+'cc', _C.blue+'cc']
+  ));
+  const bkts = SUB_BUCKETS.filter(b => b !== 'Others');
+  _mkChart('chart-sap-buckets', _hbar(bkts, [
+    { label:'Complaints', data: bkts.map(b => d.complaints.breakdown[b]?.count||0), backgroundColor:_C.red+'99', borderRadius:4 },
+    { label:'R+E+F',      data: bkts.map(b => d.request_enquiry_feedback.breakdown[b]?.count||0), backgroundColor:_C.blue+'99', borderRadius:4 },
+  ]));
+}
+
+function _fcSoOutput(d) {
+  if (!d) return;
+  const bkts = SO_ORDER.filter(b => b !== 'Others');
+  const counts = bkts.map(b => d.breakdown[b]?.count||0);
+  _mkChart('chart-so-bars', _hbar(bkts, [
+    { label:'Count', data:counts, backgroundColor: bkts.map((_,i) => _PALETTE[i%_PALETTE.length]+'cc'), borderRadius:4 }
+  ]));
+}
+
+function _fcOverallSap(d) {
+  if (!d) return;
+  _mkChart('chart-osap-split', _donut(
+    ['Complaints','R+E+Other'],
+    [d.complaints.total, d.request_enquiry_other.total],
+    [_C.red+'cc', _C.blue+'cc']
+  ));
+  const bkts = SUB_BUCKETS.filter(b => b !== 'Others');
+  _mkChart('chart-osap-buckets', _hbar(bkts, [
+    { label:'Complaints', data: bkts.map(b => d.complaints.breakdown[b]?.count||0), backgroundColor:_C.red+'99', borderRadius:4 },
+    { label:'R+E',        data: bkts.map(b => d.request_enquiry_other.breakdown[b]?.count||0), backgroundColor:_C.blue+'99', borderRadius:4 },
+  ]));
+}
+
+function _fcKPI(kpi, finalOutput) {
+  if (!kpi) return;
+  const reCats   = (kpi.re_categories   || []).slice().sort((a,b) => a.count-b.count);
+  const compCats = (kpi.comp_categories || []).slice().sort((a,b) => a.count-b.count);
+  if (reCats.length)
+    _mkChart('chart-kpi-re', _hbar(
+      reCats.map(c => c.category),
+      [{ label:'Count', data:reCats.map(c=>c.count), backgroundColor:_C.blue+'99', borderRadius:4 }]
+    ));
+  if (compCats.length)
+    _mkChart('chart-kpi-comp', _hbar(
+      compCats.map(c => c.category),
+      [{ label:'Count', data:compCats.map(c=>c.count), backgroundColor:_C.red+'99', borderRadius:4 }]
+    ));
+}
+
+function _fcRdinAgeing(d) {
+  if (!d || !d.bucket_summary) return;
+
+  // Ageing distribution bar
+  const bkts = d.bucket_summary || [];
+  _mkChart('chart-age-dist', _bar(
+    bkts.map(b => b.label),
+    [{ label:'Tickets', data: bkts.map(b=>b.count),
+       backgroundColor: bkts.map(b => _BKTCOL[b.label]||_C.gray),
+       borderRadius:6, borderSkipped:false }]
+  ));
+
+  // Category stacked bar (resolved vs open)
+  const cats = (d.by_category||[]).slice(0,12);
+  _mkChart('chart-age-cat', _hbar(
+    cats.map(c => c.name.length>22 ? c.name.slice(0,22)+'…' : c.name),
+    [
+      { label:'Resolved',     data:cats.map(c=>c.resolved), backgroundColor:_C.green+'99', borderRadius:4 },
+      { label:'No TAT (Open)',data:cats.map(c=>c.no_tat),   backgroundColor:_C.gray+'99',  borderRadius:4 },
+    ], true
+  ));
+
+  // Avg TAT by category (sorted desc)
+  const cats2 = (d.by_category||[])
+    .filter(c => c.total > 0)
+    .slice().sort((a,b) => (b.avg_tat_all||0)-(a.avg_tat_all||0))
+    .slice(0,10);
+  _mkChart('chart-age-avgt', _hbar(
+    cats2.map(c => c.name.length>22 ? c.name.slice(0,22)+'…' : c.name),
+    [{ label:'Avg TAT (days)', data: cats2.map(c=>c.avg_tat_all||0),
+       backgroundColor: cats2.map(c => {
+         const t=c.avg_tat_all||0;
+         return t<1?_C.green+'cc':t<2?_C.blue+'cc':t<3?_C.amber+'cc':t<5?_C.orange+'cc':_C.red+'cc';
+       }), borderRadius:4 }]
+  ));
 }
 
 // -----------------------------------------------------------------------
