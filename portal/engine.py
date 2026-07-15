@@ -189,6 +189,11 @@ def _kap_toplevel(vertical: str) -> str:
     return "Complaints" if _norm(vertical) == "complaint" else "Request + Enquiry"
 
 
+def _kap_re_subtype(vertical: str) -> str:
+    """Within Request+Enquiry rows: 'Request' if vertical says so, else 'Enquiry'."""
+    return "Request" if "request" in _norm(vertical) else "Enquiry"
+
+
 def _kap_subbucket(category: str, sub_category: str) -> str:
     c = _norm(category)
     s = _norm(sub_category)
@@ -296,6 +301,11 @@ def analyze_kapture(df: pd.DataFrame) -> dict:
     comp = df[df["_top"] == "Complaints"]
     req  = df[df["_top"] == "Request + Enquiry"]
 
+    # Request vs Enquiry split within R+E (based on vertical value)
+    req_re_type = req[vertical_col].apply(_kap_re_subtype)
+    kap_request_count = int((req_re_type == "Request").sum())
+    kap_enquiry_count = int((req_re_type == "Enquiry").sum())
+
     # Top raw sub-categories per bucket (for KPI combined sub-cat analysis)
     re_top_subcats   = _collect_rawsubs(req,  len(req),  top_n=10)
     comp_top_subcats = _collect_rawsubs(comp, len(comp), top_n=10)
@@ -328,6 +338,8 @@ def analyze_kapture(df: pd.DataFrame) -> dict:
         },
         "request_enquiry": {
             "total": len(req),
+            "request_count": kap_request_count,
+            "enquiry_count": kap_enquiry_count,
             "breakdown": _build_section(req["_sub"], SUB_BUCKETS, len(req)),
         },
         "re_top_subcats":   re_top_subcats,
@@ -881,6 +893,55 @@ def analyze_file(file_obj: io.BytesIO) -> dict:
     kpi             = analyze_kpi(kapture, sap_tickets, so_output, final_output)
     rdin_ageing     = analyze_rdin_ageing(kap_df)
 
+    # Break-Up summary
+    sap_request  = so_output["total"]
+    sap_enquiry  = overall_sap["request_enquiry_other"]["total"] - sap_request
+    kap_request  = kapture["request_enquiry"].get("request_count", 0)
+    kap_enquiry  = kapture["request_enquiry"].get("enquiry_count", 0)
+    break_up = {
+        "kapture": {
+            "total":           kapture["total"],
+            "complaints":      kapture["complaints"]["total"],
+            "request_enquiry": kapture["request_enquiry"]["total"],
+        },
+        "sap": {
+            "total":           overall_sap["total"],
+            "complaints":      overall_sap["complaints"]["total"],
+            "request_enquiry": overall_sap["request_enquiry_other"]["total"],
+        },
+        "kapture_re": {
+            "total":   kapture["request_enquiry"]["total"],
+            "request": kap_request,
+            "enquiry": kap_enquiry,
+        },
+        "sap_re": {
+            "total":   overall_sap["request_enquiry_other"]["total"],
+            "request": sap_request,
+            "enquiry": sap_enquiry,
+        },
+        "overall_re": {
+            "total":   final_output["request_enquiry"]["total"],
+            "request": kap_request + sap_request,
+            "enquiry": kap_enquiry + sap_enquiry,
+        },
+        "overall_complaints": {
+            "total":   final_output["complaints"]["total"],
+            "kapture": kapture["complaints"]["total"],
+            "sap":     overall_sap["complaints"]["total"],
+        },
+        "overall_re_by_source": {
+            "total":   final_output["request_enquiry"]["total"],
+            "kapture": kapture["request_enquiry"]["total"],
+            "sap":     overall_sap["request_enquiry_other"]["total"],
+        },
+        "overall": {
+            "total":      final_output["total"],
+            "complaints": final_output["complaints"]["total"],
+            "request":    kap_request + sap_request,
+            "enquiry":    kap_enquiry + sap_enquiry,
+        },
+    }
+
     return {
         "kapture":       kapture,
         "sap_tickets":   sap_tickets,
@@ -890,6 +951,7 @@ def analyze_file(file_obj: io.BytesIO) -> dict:
         "final_output":  final_output,
         "kpi":           kpi,
         "rdin_ageing":   rdin_ageing,
+        "break_up":      break_up,
         "meta": {
             "sheets": {
                 "kapture": kap_sheet,

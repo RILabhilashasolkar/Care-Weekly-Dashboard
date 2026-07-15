@@ -115,6 +115,7 @@
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(5)">KPI Calculations</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(6)">RD.IN Ageing</button>
         <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(7)">WoW Trends</button>
+        <button class="tab-btn px-5 py-3 text-sm whitespace-nowrap" onclick="switchTab(8)">Break-Up</button>
       </div>
       <div id="tab-content" class="p-6"></div>
     </div>
@@ -317,6 +318,8 @@ function switchTab(idx) {
     () => renderOverallSap(r.overall_sap),
     () => renderKPI(r.kpi, r.final_output, r.overall_sap),
     () => renderRdinAgeing(r.rdin_ageing),
+    null, // placeholder for WoW Trends (async)
+    () => renderBreakUp(r.break_up, r.kapture, r.overall_sap, r.so_output, r.final_output),
   ];
   document.getElementById("tab-content").innerHTML = renders[idx]();
   _initTabCharts(idx, r);
@@ -1136,6 +1139,119 @@ function _fcRdinAgeing(d) {
          return t<1?_C.green+'cc':t<2?_C.blue+'cc':t<3?_C.amber+'cc':t<5?_C.orange+'cc':_C.red+'cc';
        }), borderRadius:4 }]
   ));
+}
+
+// -----------------------------------------------------------------------
+// Break-Up
+// -----------------------------------------------------------------------
+function renderBreakUp(bu, kapture, overall_sap, so_output, final_output) {
+  // Fall back to deriving from raw results if break_up not yet stored
+  if (!bu) {
+    const sap_re  = (overall_sap || {}).request_enquiry_other || {};
+    const kap_re  = (kapture || {}).request_enquiry || {};
+    const sap_req = (so_output || {}).total || 0;
+    const sap_enq = (sap_re.total || 0) - sap_req;
+    const kap_req = kap_re.request_count || 0;
+    const kap_enq = kap_re.enquiry_count || (kap_re.total || 0) - kap_req;
+    bu = {
+      kapture:            { total: (kapture||{}).total||0, complaints: ((kapture||{}).complaints||{}).total||0, request_enquiry: kap_re.total||0 },
+      sap:                { total: (overall_sap||{}).total||0, complaints: ((overall_sap||{}).complaints||{}).total||0, request_enquiry: sap_re.total||0 },
+      kapture_re:         { total: kap_re.total||0, request: kap_req, enquiry: kap_enq },
+      sap_re:             { total: sap_re.total||0, request: sap_req, enquiry: sap_enq },
+      overall_re:         { total: ((final_output||{}).request_enquiry||{}).total||0, request: kap_req+sap_req, enquiry: kap_enq+sap_enq },
+      overall_complaints: { total: ((final_output||{}).complaints||{}).total||0, kapture: ((kapture||{}).complaints||{}).total||0, sap: ((overall_sap||{}).complaints||{}).total||0 },
+      overall_re_by_source: { total: ((final_output||{}).request_enquiry||{}).total||0, kapture: kap_re.total||0, sap: sap_re.total||0 },
+      overall:            { total: (final_output||{}).total||0, complaints: ((final_output||{}).complaints||{}).total||0, request: kap_req+sap_req, enquiry: kap_enq+sap_enq },
+    };
+  }
+
+  function n(v) { return (v||0).toLocaleString('en-IN'); }
+
+  function miniTable(title, rows) {
+    const headerRow = `<tr class="bg-blue-700 text-white text-xs">
+      ${rows[0].map(h => `<th class="px-3 py-2 text-right first:text-left font-semibold">${h}</th>`).join('')}
+    </tr>`;
+    const dataRows = rows.slice(1).map((r, i) =>
+      `<tr class="${i===rows.slice(1).length-1?'font-semibold bg-blue-50':''} border-t border-gray-100">
+        ${r.map((c,j) => `<td class="px-3 py-2 text-sm ${j===0?'text-left text-gray-700':'text-right text-gray-800'}">${c}</td>`).join('')}
+      </tr>`
+    ).join('');
+    return `
+      <div class="bg-white rounded-xl border shadow-sm overflow-hidden">
+        <div class="bg-blue-800 text-white text-xs font-semibold px-4 py-2 tracking-wide">${title}</div>
+        <table class="w-full border-collapse">
+          <thead>${headerRow}</thead>
+          <tbody>${dataRows}</tbody>
+        </table>
+      </div>`;
+  }
+
+  const kapSection = miniTable('Kapture (ASP, B2B, RD.IN, JSS)', [
+    ['Total Tickets', 'Complaints', 'Enquiry + Request'],
+    [n(bu.kapture.total), n(bu.kapture.complaints), n(bu.kapture.request_enquiry)],
+  ]);
+
+  const sapSection = miniTable('SAP (Offline + ResQ)', [
+    ['Total Tickets', 'Complaints', 'Enquiry + Request'],
+    [n(bu.sap.total), n(bu.sap.complaints), n(bu.sap.request_enquiry)],
+  ]);
+
+  const kapReSection = miniTable('Kapture (Enquiry + Request)', [
+    ['Total Kapture (Enquiry + Request) Tickets', 'Request', 'Enquiry'],
+    [n(bu.kapture_re.total), n(bu.kapture_re.request), n(bu.kapture_re.enquiry)],
+  ]);
+
+  const sapReSection = miniTable('SAP (Enquiry + Request)', [
+    ['Total SAP Tickets (Enquiry + Request)', 'Request', 'Enquiry'],
+    [n(bu.sap_re.total), n(bu.sap_re.request), n(bu.sap_re.enquiry)],
+  ]);
+
+  const overallReSection = miniTable('Overall Total (Enquiry + Request)', [
+    ['Total', 'Request', 'Enquiry'],
+    [n(bu.overall_re.total), n(bu.overall_re.request), n(bu.overall_re.enquiry)],
+  ]);
+
+  const overallCompSection = miniTable('Overall Total Complaints', [
+    ['Total', 'Kapture', 'SAP'],
+    [n(bu.overall_complaints.total), n(bu.overall_complaints.kapture), n(bu.overall_complaints.sap)],
+  ]);
+
+  const overallReSourceSection = miniTable('Overall Total (Enquiry + Request) by Source', [
+    ['Total', 'Kapture', 'SAP'],
+    [n(bu.overall_re_by_source.total), n(bu.overall_re_by_source.kapture), n(bu.overall_re_by_source.sap)],
+  ]);
+
+  const overallSection = miniTable('Overall', [
+    ['Total Tickets', 'Complaints', 'Request', 'Enquiry'],
+    [n(bu.overall.total), n(bu.overall.complaints), n(bu.overall.request), n(bu.overall.enquiry)],
+  ]);
+
+  return `
+    <div class="space-y-5">
+      <h2 class="text-lg font-semibold text-gray-800">Break-Up</h2>
+
+      <!-- Top row: Kapture | SAP side by side -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        ${kapSection}
+        ${sapSection}
+      </div>
+
+      <!-- E+R breakdown: Kapture | SAP -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        ${kapReSection}
+        ${sapReSection}
+      </div>
+
+      <!-- Overall summaries: 3 wide cards -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        ${overallReSection}
+        ${overallCompSection}
+        ${overallReSourceSection}
+      </div>
+
+      <!-- Full overall row -->
+      ${overallSection}
+    </div>`;
 }
 
 // -----------------------------------------------------------------------

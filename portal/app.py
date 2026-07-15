@@ -183,6 +183,8 @@ def api_get_report(report_id: str):
         or "top_subcats" not in r["results"].get("so_output", {})
         or "kpi" not in r["results"]
         or "rdin_ageing" not in r["results"]
+        or "break_up" not in r["results"]
+        or "request_count" not in kap.get("request_enquiry", {})
     )
     if needs_backfill:
         upload_files = sorted(UPLOAD_DIR.glob(f"{report_id}_*"))
